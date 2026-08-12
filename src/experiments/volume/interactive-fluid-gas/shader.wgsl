@@ -143,7 +143,6 @@ fn csFluid(@builtin(global_invocation_id) gid: vec3u) {
   let time = frame.timeResolution.x;
   let audio = frame.pointer.w;
 
-  // Several low-frequency cartesian cells make the idle core crawl instead of rotate.
   let cellA = vec2f(
     sin(uv.y * 13.1 + time * 0.74) + sin(uv.x * 7.7 - time * 0.49) * 0.55,
     cos(uv.x * 11.9 - time * 0.63) - cos(uv.y * 8.3 + time * 0.42) * 0.52,
@@ -234,10 +233,6 @@ fn hash31(p: vec3f) -> f32 {
   return fract((q.x + q.y) * q.z);
 }
 
-fn hash11(x: f32) -> f32 {
-  return fract(sin(x * 127.1 + 311.7) * 43758.5453123);
-}
-
 fn rotateVolume(pInput: vec3f, time: f32) -> vec3f {
   var p = pInput;
   let xz = rotate2(vec2f(p.x, p.z), time * 0.17 + 0.23);
@@ -271,7 +266,6 @@ fn spiralRidged3(pInput: vec3f, phase: f32) -> f32 {
         + cos(p.x * frequency - phase * 0.51)
     ) * 0.5;
     sum += max(0.0, 1.0 - wave) * amplitude;
-
     let xy = rotate2(vec2f(p.x, p.y), 0.64 + f32(i) * 0.07);
     p = vec3f(xy.x, xy.y, p.z);
     let xz = rotate2(vec2f(p.x, p.z), -0.51 + f32(i) * 0.05);
@@ -293,7 +287,6 @@ fn spiralFlow3(pInput: vec3f, phase: f32) -> f32 {
         + cos(p.x * frequency - phase * 0.47)
     ) * 0.5;
     sum += wave * amplitude;
-
     let xz = rotate2(vec2f(p.x, p.z), 0.57 + f32(i) * 0.11);
     p = vec3f(xz.x, p.y, xz.y);
     let yz = rotate2(vec2f(p.y, p.z), -0.43 + f32(i) * 0.08);
@@ -307,11 +300,9 @@ fn spiralFlow3(pInput: vec3f, phase: f32) -> f32 {
 fn sampleFluidWorld(p: vec3f) -> Fluid3D {
   let weightsRaw = abs(p) + vec3f(0.20);
   let weights = weightsRaw / max(dot(weightsRaw, vec3f(1.0)), 0.001);
-
   let xy = sampleFluidNearest(p.xy * 0.47 + vec2f(0.5));
   let yz = sampleFluidNearest(p.yz * 0.47 + vec2f(0.5));
   let zx = sampleFluidNearest(vec2f(p.z, p.x) * 0.47 + vec2f(0.5));
-
   var result: Fluid3D;
   result.velocity = vec3f(xy.x, xy.y, 0.0) * weights.z
     + vec3f(0.0, yz.x, yz.y) * weights.x
@@ -340,10 +331,7 @@ fn branchTube3(p: vec3f, dir: vec3f, phase: f32, width: f32, reach: f32) -> f32 
     + sin(along * 21.0 - phase * 0.71) * 0.021;
   let bendB = cos(along * 7.9 - phase * 0.83) * 0.043
     + sin(along * 15.0 + phase * 1.31) * 0.016;
-  let side = vec2f(
-    dot(p, sideA) - bendA,
-    dot(p, sideB) - bendB,
-  );
+  let side = vec2f(dot(p, sideA) - bendA, dot(p, sideB) - bendB);
   let tube = 1.0 - smoothstep(width * 0.72, width * 1.42, length(side));
   let window = smoothstep(0.075, 0.20, along)
     * (1.0 - smoothstep(reach * 0.82, reach, along));
@@ -363,49 +351,48 @@ fn foldedSheet3(p: vec3f, normal: vec3f, phase: f32, thickness: f32, reach: f32)
   let fold = sin(u * 11.0 + phase) * 0.036
     + sin(v * 14.9 - phase * 1.2) * 0.028
     + sin((u + v) * 21.0 + phase * 0.43) * 0.015;
-  let sheet = 1.0 - smoothstep(
-    thickness * 0.58,
-    thickness * 1.55,
-    abs(plane - fold),
-  );
+  let sheet = 1.0 - smoothstep(thickness * 0.58, thickness * 1.55, abs(plane - fold));
   let radius = length(p);
   let window = smoothstep(0.23, 0.36, radius)
     * (1.0 - smoothstep(reach * 0.84, reach, radius));
   return sheet * window;
 }
 
+fn cellularBlob(p: vec3f, seed: f32, frequency: f32, sizeScale: f32) -> f32 {
+  let seedOffset = vec3f(seed * 17.3, seed * 29.7 + 7.1, seed * 43.1 - 3.7);
+  let q = p * frequency + seedOffset;
+  let cell = floor(q);
+  let local = fract(q) - vec3f(0.5);
+  let occupancy = hash31(cell + vec3f(1.7, 9.2, 4.4));
+  let center = (vec3f(
+    hash31(cell + vec3f(13.1, 2.7, 8.3)),
+    hash31(cell + vec3f(5.9, 17.7, 3.1)),
+    hash31(cell + vec3f(11.3, 7.1, 19.9)),
+  ) - vec3f(0.5)) * 0.44;
+  let radius = mix(0.10, 0.25, hash31(cell + vec3f(23.1, 3.7, 15.3))) * sizeScale;
+  let blob = 1.0 - smoothstep(radius * 0.62, radius, length(local - center));
+  return blob * smoothstep(0.55, 0.80, occupancy);
+}
+
 fn fragmentParticleField(p: vec3f, seed: f32, activity: f32, reach: f32) -> f32 {
-  var field = 0.0;
-  for (var i = 0; i < 10; i += 1) {
-    let fi = f32(i);
-    let h0 = hash11(seed * 41.7 + fi * 13.1 + 0.7);
-    let h1 = hash11(seed * 63.3 + fi * 19.7 + 2.1);
-    let h2 = hash11(seed * 87.1 + fi * 7.9 + 4.3);
-    let dir = seedDirection(seed + h0 * 0.31, fi * 0.73 + h1);
-    var sideAxis = cross(dir, vec3f(0.0, 1.0, 0.0));
-    if (length(sideAxis) < 0.08) {
-      sideAxis = cross(dir, vec3f(1.0, 0.0, 0.0));
-    }
-    sideAxis = normalize(sideAxis);
-    let spread = mix(0.20, reach * 0.88, h0) * (0.48 + activity * 0.52);
-    let sideOffset = (h1 - 0.5) * 0.19 * activity;
-    let upOffset = (h2 - 0.5) * 0.13 * activity;
-    let center = dir * spread
-      + sideAxis * sideOffset
-      + vec3f(0.0, upOffset, 0.0);
-    let radius = mix(0.020, 0.060, h2) * params.uFragmentScale.x;
-    let d = length(p - center);
-    let blob = 1.0 - smoothstep(radius * 0.62, radius * 1.45, d);
-    field += blob * mix(0.52, 1.0, h1);
-  }
-  return smoothstep(0.22, 0.84, field);
+  let scale = max(params.uFragmentScale.x, 0.35);
+  let coarse = cellularBlob(p, seed, 9.6 / scale, 1.0);
+  let fine = cellularBlob(
+    p + vec3f(0.031, -0.047, 0.019),
+    seed + 0.371,
+    15.4 / scale,
+    0.72,
+  );
+  let radius = length(p);
+  let radialWindow = smoothstep(0.18, 0.30, radius)
+    * (1.0 - smoothstep(reach * 0.86, reach, radius));
+  return max(coarse, fine * 0.72) * radialWindow * activity;
 }
 
 fn densityField(pInput: vec3f) -> f32 {
   let time = frame.timeResolution.x;
   let audio = frame.pointer.w;
-  let inputRadius = length(pInput);
-  if (inputRadius > 1.08) {
+  if (length(pInput) > 1.08) {
     return 0.0;
   }
 
@@ -417,9 +404,9 @@ fn densityField(pInput: vec3f) -> f32 {
   );
   let activity = smoothstep(0.018, 0.34, burstLocal);
   let coreCollapse = smoothstep(
-    0.035,
-    0.24,
-    frame.pointer.z * 0.95 + min(fluid.burst, 0.9) * 0.28,
+    0.018,
+    0.12,
+    frame.pointer.z * 0.95 + min(fluid.burst, 0.9) * 0.30,
   );
 
   var p = pInput - fluid.velocity
@@ -472,8 +459,7 @@ fn densityField(pInput: vec3f) -> f32 {
     params.uDetailCutoff.x + 0.20,
     detail * 0.72 + fine * 0.28,
   );
-  let coreTexture = 0.18 + porous * 0.82;
-  let idleDensity = coreEnvelope * coreTexture * 0.92;
+  let idleDensity = coreEnvelope * (0.18 + porous * 0.82) * 0.92;
 
   if (activity < 0.001 && coreCollapse < 0.001) {
     return max(0.0, idleDensity * params.uDensity.x);
@@ -501,12 +487,9 @@ fn densityField(pInput: vec3f) -> f32 {
   let sheet0 = foldedSheet3(p, d1, seed * 9.7 + 1.2, width * 0.40, reach * 0.96);
   let sheet1 = foldedSheet3(p, d3, seed * 13.4 - 2.0, width * 0.32, reach * 0.86);
   let sheets = max(sheet0, sheet1 * 0.84) * params.uSheetStrength.x;
-
   let fragments = fragmentParticleField(p, seed, activity, reach)
     * params.uFragmentStrength.x;
 
-  // Once the burst opens, the intact sphere disappears. Only sparse irregular remnants
-  // survive in the center, so no spherical contour remains behind the exploded shapes.
   let residualMask = smoothstep(
     0.62,
     0.88,
@@ -526,7 +509,7 @@ fn densityField(pInput: vec3f) -> f32 {
     detail * 0.66 + fine * 0.34,
   );
   let structural = activity
-    * (branchVolume + sheets + fragments * 0.88)
+    * (branchVolume + sheets + fragments * 0.90)
     * (0.42 + burstTexture * 0.78)
     * (0.58 + burstLocal * 0.76);
   let smokeTrail = clamp(fluid.dye, 0.0, 1.7)
@@ -534,10 +517,7 @@ fn densityField(pInput: vec3f) -> f32 {
     * (1.0 - smoothstep(0.68, 1.05, radius))
     * (0.035 + detail * 0.090);
 
-  return max(
-    0.0,
-    (coreDensity + structural + smokeTrail) * params.uDensity.x,
-  );
+  return max(0.0, (coreDensity + structural + smokeTrail) * params.uDensity.x);
 }
 
 fn intersectSphere(ro: vec3f, rd: vec3f, radius: f32) -> vec2f {
@@ -568,9 +548,7 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
   let time = frame.timeResolution.x;
 
   let degreesToRadians = 0.017453292519943295;
-  let yaw = (
-    params.uCameraYaw.x + time * params.uCameraOrbitSpeed.x
-  ) * degreesToRadians;
+  let yaw = (params.uCameraYaw.x + time * params.uCameraOrbitSpeed.x) * degreesToRadians;
   let pitch = clamp(params.uCameraPitch.x, -82.0, 82.0) * degreesToRadians;
   let cameraDistance = clamp(params.uCameraDistance.x, 1.45, 6.0);
   let cosPitch = cos(pitch);
@@ -584,11 +562,7 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
   let cameraUp = normalize(cross(cameraRight, forward));
   let fovRadians = clamp(params.uCameraFov.x, 20.0, 100.0) * degreesToRadians;
   let focalLength = 1.0 / tan(fovRadians * 0.5);
-  let rd = normalize(
-    forward * focalLength
-      + cameraRight * screen.x
-      + cameraUp * screen.y
-  );
+  let rd = normalize(forward * focalLength + cameraRight * screen.x + cameraUp * screen.y);
 
   let hit = intersectSphere(ro, rd, 1.09);
   var background = mix(
@@ -605,9 +579,9 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
     let startT = max(hit.x, 0.0);
     let travelDistance = hit.y - startT;
     let stepLength = travelDistance / f32(steps);
-    let jitter = (
-      hash31(vec3f(in.position.xy, fract(time))) - 0.5
-    ) * stepLength * params.uJitter.x;
+    let jitter = (hash31(vec3f(in.position.xy, fract(time))) - 0.5)
+      * stepLength
+      * params.uJitter.x;
 
     var t = startT + jitter;
     var transmittance = 1.0;
@@ -642,9 +616,7 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
           let sampleColor = gasColor * (
             light + rim * (0.17 + burstGlow * 0.07) + burstGlow * 0.022
           );
-          let alpha = 1.0 - exp(
-            -density * params.uAbsorption.x * stepLength
-          );
+          let alpha = 1.0 - exp(-density * params.uAbsorption.x * stepLength);
           scattering += transmittance * alpha * sampleColor;
           transmittance *= 1.0 - alpha;
           if (transmittance < 0.022) {
@@ -666,9 +638,7 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
       * audioRunning;
   let lineDistance = abs(screen.y - wave);
   let line = exp(-lineDistance * max(resolution.y, 1.0) * 0.42);
-  let baseline = exp(
-    -abs(screen.y + 0.79) * max(resolution.y, 1.0) * 0.16
-  ) * 0.10;
+  let baseline = exp(-abs(screen.y + 0.79) * max(resolution.y, 1.0) * 0.16) * 0.10;
   color += params.uWaveColor.xyz * (line * 0.68 + baseline);
 
   color = color / (color + vec3f(1.0));
@@ -680,288 +650,59 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
 {
   "version": 1,
   "parameters": {
-    "uCameraYaw": {
-      "type": "float", "default": 18.0, "min": -180.0, "max": 180.0, "step": 1.0,
-      "label": { "zh": "相机水平角", "en": "Camera Yaw" },
-      "description": { "zh": "绕世界空间体积水平环绕。", "en": "Horizontal orbit around the world-space volume." },
-      "group": { "zh": "相机", "en": "Camera" }
-    },
-    "uCameraPitch": {
-      "type": "float", "default": 8.0, "min": -80.0, "max": 80.0, "step": 1.0,
-      "label": { "zh": "相机俯仰角", "en": "Camera Pitch" },
-      "description": { "zh": "控制上下观察角度。", "en": "Vertical orbit angle." },
-      "group": { "zh": "相机", "en": "Camera" }
-    },
-    "uCameraDistance": {
-      "type": "float", "default": 3.15, "min": 1.5, "max": 6.0, "step": 0.02,
-      "label": { "zh": "相机距离", "en": "Camera Distance" },
-      "description": { "zh": "控制相机到体积中心的距离。", "en": "Distance from camera to volume center." },
-      "group": { "zh": "相机", "en": "Camera" }
-    },
-    "uCameraFov": {
-      "type": "float", "default": 46.0, "min": 20.0, "max": 100.0, "step": 1.0,
-      "label": { "zh": "相机视野", "en": "Camera FOV" },
-      "description": { "zh": "垂直视野角。", "en": "Vertical field of view." },
-      "group": { "zh": "相机", "en": "Camera" }
-    },
-    "uCameraOrbitSpeed": {
-      "type": "float", "default": 0.0, "min": -30.0, "max": 30.0, "step": 0.1,
-      "label": { "zh": "自动环绕速度", "en": "Auto Orbit Speed" },
-      "description": { "zh": "自动水平环绕速度。", "en": "Automatic yaw orbit speed." },
-      "group": { "zh": "相机", "en": "Camera" }
-    },
-    "uDensity": {
-      "type": "float", "default": 0.78, "min": 0.1, "max": 3.0, "step": 0.01,
-      "label": { "zh": "气体密度", "en": "Gas Density" },
-      "description": { "zh": "整体体积密度。", "en": "Overall volume density." },
-      "group": { "zh": "体积", "en": "Volume" }
-    },
-    "uAbsorption": {
-      "type": "float", "default": 1.52, "min": 0.2, "max": 8.0, "step": 0.01,
-      "label": { "zh": "吸收", "en": "Absorption" },
-      "description": { "zh": "Beer-Lambert 吸收强度。", "en": "Beer-Lambert absorption strength." },
-      "group": { "zh": "体积", "en": "Volume" }
-    },
-    "uCoreRadius": {
-      "type": "float", "default": 0.40, "min": 0.25, "max": 0.65, "step": 0.005,
-      "label": { "zh": "核心半径", "en": "Core Radius" },
-      "description": { "zh": "平静状态的基础核心尺寸。", "en": "Base size of the idle core." },
-      "group": { "zh": "核心形态", "en": "Core Shape" }
-    },
-    "uCoreWobble": {
-      "type": "float", "default": 0.135, "min": 0.0, "max": 0.28, "step": 0.005,
-      "label": { "zh": "核心蠕动", "en": "Core Wobble" },
-      "description": { "zh": "三维连续域形变强度；默认值强化可见的蠕动和翻涌。", "en": "Continuous 3D domain deformation; the default makes crawling and rolling clearly visible." },
-      "group": { "zh": "核心形态", "en": "Core Shape" }
-    },
-    "uCoreDetailStrength": {
-      "type": "float", "default": 1.05, "min": 0.0, "max": 2.0, "step": 0.01,
-      "label": { "zh": "表面细节", "en": "Surface Detail" },
-      "description": { "zh": "连续 3D ridged 细节对边界和光照的影响。", "en": "Continuous 3D ridged detail on the boundary and lighting." },
-      "group": { "zh": "核心形态", "en": "Core Shape" }
-    },
-    "uNoiseScale": {
-      "type": "float", "default": 3.7, "min": 1.0, "max": 8.0, "step": 0.02,
-      "label": { "zh": "分形细节尺度", "en": "Fractal Detail Scale" },
-      "description": { "zh": "三维连续 ridged noise 的空间频率。", "en": "Spatial frequency of the seamless 3D ridged noise." },
-      "group": { "zh": "核心形态", "en": "Core Shape" }
-    },
-    "uDetailCutoff": {
-      "type": "float", "default": 0.54, "min": 0.18, "max": 0.82, "step": 0.01,
-      "label": { "zh": "内部疏松度", "en": "Internal Porosity" },
-      "description": { "zh": "提高后会削弱低分形密度区域，使核心不再像实心球。", "en": "Suppresses low-fractal-density regions so the core reads less like a solid sphere." },
-      "group": { "zh": "核心形态", "en": "Core Shape" }
-    },
-    "uTurbulence": {
-      "type": "float", "default": 1.05, "min": 0.0, "max": 2.8, "step": 0.01,
-      "label": { "zh": "翻涌速度", "en": "Rolling Speed" },
-      "description": { "zh": "控制平静核心的持续蠕动速度。", "en": "Controls continuous crawling speed of the idle core." },
-      "group": { "zh": "核心形态", "en": "Core Shape" }
-    },
-    "uExpansion": {
-      "type": "float", "default": 0.18, "min": 0.0, "max": 1.5, "step": 0.01,
-      "label": { "zh": "呼吸扩张", "en": "Breathing Expansion" },
-      "description": { "zh": "弱呼吸运动，不持续放大主体。", "en": "Subtle breathing without continuous inflation." },
-      "group": { "zh": "核心形态", "en": "Core Shape" }
-    },
-    "uFluidInfluence": {
-      "type": "float", "default": 1.42, "min": 0.0, "max": 3.5, "step": 0.01,
-      "label": { "zh": "流体形变", "en": "Fluid Deformation" },
-      "description": { "zh": "二维场通过三平面采样形变三维密度。", "en": "Tri-planar lifting of the 2D field into 3D density deformation." },
-      "group": { "zh": "二维解算", "en": "2D Solver" }
-    },
-    "uAdvection": {
-      "type": "float", "default": 1.08, "min": 0.1, "max": 2.0, "step": 0.01,
-      "label": { "zh": "平流速度", "en": "Advection" },
-      "description": { "zh": "半拉格朗日平流回溯距离。", "en": "Semi-Lagrangian backtrace distance." },
-      "group": { "zh": "二维解算", "en": "2D Solver" }
-    },
-    "uViscosity": {
-      "type": "float", "default": 0.11, "min": 0.0, "max": 1.0, "step": 0.01,
-      "label": { "zh": "粘性", "en": "Viscosity" },
-      "description": { "zh": "速度场邻域平滑。", "en": "Neighborhood smoothing of the velocity field." },
-      "group": { "zh": "二维解算", "en": "2D Solver" }
-    },
-    "uVorticity": {
-      "type": "float", "default": 1.05, "min": 0.0, "max": 3.0, "step": 0.01,
-      "label": { "zh": "涡量保持", "en": "Vorticity" },
-      "description": { "zh": "保持爆裂后的局部卷曲。", "en": "Preserves local curls after a burst." },
-      "group": { "zh": "二维解算", "en": "2D Solver" }
-    },
-    "uVelocityDissipation": {
-      "type": "float", "default": 0.42, "min": 0.0, "max": 3.0, "step": 0.01,
-      "label": { "zh": "速度耗散", "en": "Velocity Dissipation" },
-      "description": { "zh": "二维速度场衰减。", "en": "2D velocity-field decay." },
-      "group": { "zh": "二维解算", "en": "2D Solver" }
-    },
-    "uDyeDissipation": {
-      "type": "float", "default": 0.44, "min": 0.0, "max": 3.0, "step": 0.01,
-      "label": { "zh": "烟雾耗散", "en": "Smoke Dissipation" },
-      "description": { "zh": "二维烟雾辅助场衰减。", "en": "2D smoke helper-field decay." },
-      "group": { "zh": "二维解算", "en": "2D Solver" }
-    },
-    "uBurstFieldDissipation": {
-      "type": "float", "default": 0.92, "min": 0.1, "max": 4.0, "step": 0.01,
-      "label": { "zh": "爆裂记忆耗散", "en": "Burst Memory Dissipation" },
-      "description": { "zh": "爆裂结构重新聚合的速度。", "en": "How quickly burst memory decays and the core reforms." },
-      "group": { "zh": "二维解算", "en": "2D Solver" }
-    },
-    "uSolverSubsteps": {
-      "type": "int", "default": 2, "min": 1, "max": 4, "step": 1,
-      "label": { "zh": "解算子步", "en": "Solver Substeps" },
-      "description": { "zh": "每帧二维解算子步数。", "en": "2D solver substeps per frame." },
-      "group": { "zh": "二维解算", "en": "2D Solver" }
-    },
-    "uClickBurstStrength": {
-      "type": "float", "default": 1.30, "min": 0.0, "max": 3.0, "step": 0.01,
-      "label": { "zh": "点击爆裂强度", "en": "Click Burst Strength" },
-      "description": { "zh": "鼠标按下触发的一次性爆裂强度。", "en": "One-shot burst strength on pointer down." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uBurstDuration": {
-      "type": "float", "default": 0.98, "min": 0.15, "max": 2.5, "step": 0.01,
-      "label": { "zh": "注入持续时间", "en": "Injection Duration" },
-      "description": { "zh": "一次爆裂及核心坍塌包络的持续时间。", "en": "Duration of burst injection and core-collapse envelope." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uBurstForce": {
-      "type": "float", "default": 2.42, "min": 0.0, "max": 5.0, "step": 0.01,
-      "label": { "zh": "爆裂推力", "en": "Burst Force" },
-      "description": { "zh": "分形注入对二维速度场的推力。", "en": "Force applied by fractal injection to the 2D field." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uBurstDensity": {
-      "type": "float", "default": 1.12, "min": 0.0, "max": 3.0, "step": 0.01,
-      "label": { "zh": "爆裂烟雾", "en": "Burst Smoke" },
-      "description": { "zh": "爆裂注入的二维烟雾量。", "en": "2D smoke injected by a burst." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uBurstVisualStrength": {
-      "type": "float", "default": 1.35, "min": 0.0, "max": 3.0, "step": 0.01,
-      "label": { "zh": "爆裂结构强度", "en": "Burst Structure Strength" },
-      "description": { "zh": "二维爆裂记忆抬升成三维结构的强度。", "en": "Strength used when lifting burst memory into 3D structures." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uFractalBranches": {
-      "type": "float", "default": 6.4, "min": 3.0, "max": 10.0, "step": 0.1,
-      "label": { "zh": "二维分形复杂度", "en": "2D Fractal Complexity" },
-      "description": { "zh": "主爆裂场的多尺度复杂度。", "en": "Multi-scale complexity of the main burst field." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uBranchSharpness": {
-      "type": "float", "default": 3.45, "min": 1.0, "max": 7.0, "step": 0.1,
-      "label": { "zh": "二维分支锐度", "en": "2D Branch Sharpness" },
-      "description": { "zh": "主分形分支锐度。", "en": "Sharpness of the main fractal branches." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uBurstReach": {
-      "type": "float", "default": 0.92, "min": 0.50, "max": 1.08, "step": 0.01,
-      "label": { "zh": "爆裂范围", "en": "Burst Reach" },
-      "description": { "zh": "主干、薄片和碎片的最大展开范围。", "en": "Maximum reach of trunks, sheets, and fragments." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uBranchWidth": {
-      "type": "float", "default": 0.052, "min": 0.018, "max": 0.14, "step": 0.002,
-      "label": { "zh": "主干宽度", "en": "Branch Width" },
-      "description": { "zh": "三维主干的厚度，默认更细以获得清晰分叉。", "en": "Thickness of 3D trunks; the default is thinner for clearer branching." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uSheetStrength": {
-      "type": "float", "default": 0.58, "min": 0.0, "max": 2.0, "step": 0.01,
-      "label": { "zh": "褶皱薄片", "en": "Folded Sheets" },
-      "description": { "zh": "宽褶皱膜状结构强度。", "en": "Strength of broad folded membrane-like structures." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uFragmentStrength": {
-      "type": "float", "default": 1.15, "min": 0.0, "max": 2.5, "step": 0.01,
-      "label": { "zh": "细碎体积", "en": "Micro Fragments" },
-      "description": { "zh": "爆裂时独立 metaball-like 小体积碎片的密度。", "en": "Density of independent metaball-like micro fragments during bursts." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uFragmentScale": {
-      "type": "float", "default": 0.82, "min": 0.35, "max": 1.8, "step": 0.01,
-      "label": { "zh": "碎片尺寸", "en": "Fragment Scale" },
-      "description": { "zh": "独立细碎体积的平均尺寸。", "en": "Average size of independent micro-volume fragments." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uCoreRemnant": {
-      "type": "float", "default": 0.10, "min": 0.0, "max": 0.6, "step": 0.01,
-      "label": { "zh": "中心残块", "en": "Core Remnants" },
-      "description": { "zh": "爆裂后允许留在中心的不规则残块量；0 会完全移除中心核心。", "en": "Sparse irregular remnants allowed after the burst; zero removes the center completely." },
-      "group": { "zh": "爆裂", "en": "Burst" }
-    },
-    "uAudioPaused": {
-      "type": "boolean", "default": false,
-      "label": { "zh": "暂停音乐", "en": "Pause Audio" },
-      "description": { "zh": "暂停合成音频驱动、自动节拍爆裂和波形运动；鼠标点击仍可触发。", "en": "Pauses synthetic audio drive, automatic beat bursts, and waveform motion; pointer bursts remain active." },
-      "group": { "zh": "音频", "en": "Audio" }
-    },
-    "uAudioBurstEnabled": {
-      "type": "boolean", "default": true,
-      "label": { "zh": "音频触发爆裂", "en": "Audio Burst Trigger" },
-      "description": { "zh": "未暂停时，合成音频越过阈值会触发爆裂。", "en": "When audio is running, upward threshold crossings trigger bursts." },
-      "group": { "zh": "音频", "en": "Audio" }
-    },
-    "uAudioBurstStrength": {
-      "type": "float", "default": 0.78, "min": 0.0, "max": 2.5, "step": 0.01,
-      "label": { "zh": "音频爆裂强度", "en": "Audio Burst Strength" },
-      "description": { "zh": "节拍事件触发的爆裂强度。", "en": "Burst strength triggered by a beat event." },
-      "group": { "zh": "音频", "en": "Audio" }
-    },
-    "uBeatThreshold": {
-      "type": "float", "default": 0.71, "min": 0.45, "max": 0.95, "step": 0.01,
-      "label": { "zh": "节拍阈值", "en": "Beat Threshold" },
-      "description": { "zh": "音频包络上升沿阈值。", "en": "Upward-crossing threshold for the audio envelope." },
-      "group": { "zh": "音频", "en": "Audio" }
-    },
-    "uBeatCooldown": {
-      "type": "float", "default": 0.82, "min": 0.2, "max": 3.0, "step": 0.01,
-      "label": { "zh": "节拍冷却", "en": "Beat Cooldown" },
-      "description": { "zh": "自动爆裂事件之间的最短间隔。", "en": "Minimum interval between automatic burst events." },
-      "group": { "zh": "音频", "en": "Audio" }
-    },
-    "uAudioInfluence": {
-      "type": "float", "default": 0.54, "min": 0.0, "max": 2.5, "step": 0.01,
-      "label": { "zh": "音频呼吸", "en": "Audio Breathing" },
-      "description": { "zh": "音频对平静核心呼吸和波形的影响。", "en": "Audio influence on idle breathing and the waveform." },
-      "group": { "zh": "音频", "en": "Audio" }
-    },
-    "uSteps": {
-      "type": "int", "default": 76, "min": 32, "max": 140, "step": 1,
-      "label": { "zh": "光线步数", "en": "Ray Steps" },
-      "description": { "zh": "体积 raymarch 采样步数。", "en": "Volume ray-marching sample count." },
-      "group": { "zh": "采样", "en": "Sampling" }
-    },
-    "uJitter": {
-      "type": "float", "default": 0.42, "min": 0.0, "max": 1.0, "step": 0.01,
-      "label": { "zh": "采样抖动", "en": "Jitter" },
-      "description": { "zh": "降低默认抖动以提高清晰度，同时保留少量抗条带。", "en": "Lower default jitter improves clarity while retaining some banding suppression." },
-      "group": { "zh": "采样", "en": "Sampling" }
-    },
-    "uShadow": {
-      "type": "float", "default": 1.12, "min": 0.0, "max": 4.0, "step": 0.01,
-      "label": { "zh": "局部阴影", "en": "Local Shadow" },
-      "description": { "zh": "低成本局部密度阴影。", "en": "Low-cost local density shadowing." },
-      "group": { "zh": "光照", "en": "Lighting" }
-    },
-    "uGasColor": {
-      "type": "color", "default": "#789dd0",
-      "label": { "zh": "气体颜色", "en": "Gas Color" },
-      "description": { "zh": "体积散射颜色。", "en": "Volumetric scattering color." },
-      "group": { "zh": "外观", "en": "Appearance" }
-    },
-    "uWaveColor": {
-      "type": "color", "default": "#55d8ff",
-      "label": { "zh": "波形颜色", "en": "Wave Color" },
-      "description": { "zh": "底部音频波形颜色。", "en": "Color of the audio waveform." },
-      "group": { "zh": "外观", "en": "Appearance" }
-    },
-    "uUncappedBenchmark": {
-      "type": "boolean", "default": false,
-      "label": { "zh": "取消帧率限制", "en": "Uncapped Benchmark" },
-      "description": { "zh": "绕过显示刷新同步测试 GPU 吞吐，可能显著提高功耗。", "en": "Bypasses display synchronization to benchmark GPU throughput and may increase power use." },
-      "group": { "zh": "性能", "en": "Performance" }
-    }
+    "uCameraYaw": { "type": "float", "default": 18.0, "min": -180.0, "max": 180.0, "step": 1.0, "label": { "zh": "相机水平角", "en": "Camera Yaw" }, "group": { "zh": "相机", "en": "Camera" } },
+    "uCameraPitch": { "type": "float", "default": 8.0, "min": -80.0, "max": 80.0, "step": 1.0, "label": { "zh": "相机俯仰角", "en": "Camera Pitch" }, "group": { "zh": "相机", "en": "Camera" } },
+    "uCameraDistance": { "type": "float", "default": 3.15, "min": 1.5, "max": 6.0, "step": 0.02, "label": { "zh": "相机距离", "en": "Camera Distance" }, "group": { "zh": "相机", "en": "Camera" } },
+    "uCameraFov": { "type": "float", "default": 46.0, "min": 20.0, "max": 100.0, "step": 1.0, "label": { "zh": "相机视野", "en": "Camera FOV" }, "group": { "zh": "相机", "en": "Camera" } },
+    "uCameraOrbitSpeed": { "type": "float", "default": 0.0, "min": -30.0, "max": 30.0, "step": 0.1, "label": { "zh": "自动环绕速度", "en": "Auto Orbit Speed" }, "group": { "zh": "相机", "en": "Camera" } },
+
+    "uDensity": { "type": "float", "default": 0.78, "min": 0.1, "max": 3.0, "step": 0.01, "label": { "zh": "气体密度", "en": "Gas Density" }, "group": { "zh": "体积", "en": "Volume" } },
+    "uAbsorption": { "type": "float", "default": 1.52, "min": 0.2, "max": 8.0, "step": 0.01, "label": { "zh": "吸收", "en": "Absorption" }, "group": { "zh": "体积", "en": "Volume" } },
+
+    "uCoreRadius": { "type": "float", "default": 0.40, "min": 0.25, "max": 0.65, "step": 0.005, "label": { "zh": "核心半径", "en": "Core Radius" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+    "uCoreWobble": { "type": "float", "default": 0.135, "min": 0.0, "max": 0.28, "step": 0.005, "label": { "zh": "核心蠕动", "en": "Core Wobble" }, "description": { "zh": "连续三维域形变，默认强化可见蠕动。", "en": "Continuous 3D domain deformation with visibly stronger idle crawling." }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+    "uCoreDetailStrength": { "type": "float", "default": 1.05, "min": 0.0, "max": 2.0, "step": 0.01, "label": { "zh": "表面细节", "en": "Surface Detail" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+    "uNoiseScale": { "type": "float", "default": 3.7, "min": 1.0, "max": 8.0, "step": 0.02, "label": { "zh": "分形细节尺度", "en": "Fractal Detail Scale" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+    "uDetailCutoff": { "type": "float", "default": 0.54, "min": 0.18, "max": 0.82, "step": 0.01, "label": { "zh": "内部疏松度", "en": "Internal Porosity" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+    "uTurbulence": { "type": "float", "default": 1.05, "min": 0.0, "max": 2.8, "step": 0.01, "label": { "zh": "翻涌速度", "en": "Rolling Speed" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+    "uExpansion": { "type": "float", "default": 0.18, "min": 0.0, "max": 1.5, "step": 0.01, "label": { "zh": "呼吸扩张", "en": "Breathing Expansion" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+
+    "uFluidInfluence": { "type": "float", "default": 1.42, "min": 0.0, "max": 3.5, "step": 0.01, "label": { "zh": "流体形变", "en": "Fluid Deformation" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
+    "uAdvection": { "type": "float", "default": 1.08, "min": 0.1, "max": 2.0, "step": 0.01, "label": { "zh": "平流速度", "en": "Advection" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
+    "uViscosity": { "type": "float", "default": 0.11, "min": 0.0, "max": 1.0, "step": 0.01, "label": { "zh": "粘性", "en": "Viscosity" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
+    "uVorticity": { "type": "float", "default": 1.05, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "涡量保持", "en": "Vorticity" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
+    "uVelocityDissipation": { "type": "float", "default": 0.42, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "速度耗散", "en": "Velocity Dissipation" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
+    "uDyeDissipation": { "type": "float", "default": 0.44, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "烟雾耗散", "en": "Smoke Dissipation" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
+    "uBurstFieldDissipation": { "type": "float", "default": 0.92, "min": 0.1, "max": 4.0, "step": 0.01, "label": { "zh": "爆裂记忆耗散", "en": "Burst Memory Dissipation" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
+    "uSolverSubsteps": { "type": "int", "default": 2, "min": 1, "max": 4, "step": 1, "label": { "zh": "解算子步", "en": "Solver Substeps" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
+
+    "uClickBurstStrength": { "type": "float", "default": 1.30, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "点击爆裂强度", "en": "Click Burst Strength" }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uBurstDuration": { "type": "float", "default": 0.98, "min": 0.15, "max": 2.5, "step": 0.01, "label": { "zh": "注入持续时间", "en": "Injection Duration" }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uBurstForce": { "type": "float", "default": 2.42, "min": 0.0, "max": 5.0, "step": 0.01, "label": { "zh": "爆裂推力", "en": "Burst Force" }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uBurstDensity": { "type": "float", "default": 1.12, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "爆裂烟雾", "en": "Burst Smoke" }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uBurstVisualStrength": { "type": "float", "default": 1.35, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "爆裂结构强度", "en": "Burst Structure Strength" }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uFractalBranches": { "type": "float", "default": 6.4, "min": 3.0, "max": 10.0, "step": 0.1, "label": { "zh": "二维分形复杂度", "en": "2D Fractal Complexity" }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uBranchSharpness": { "type": "float", "default": 3.45, "min": 1.0, "max": 7.0, "step": 0.1, "label": { "zh": "二维分支锐度", "en": "2D Branch Sharpness" }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uBurstReach": { "type": "float", "default": 0.92, "min": 0.50, "max": 1.08, "step": 0.01, "label": { "zh": "爆裂范围", "en": "Burst Reach" }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uBranchWidth": { "type": "float", "default": 0.052, "min": 0.018, "max": 0.14, "step": 0.002, "label": { "zh": "主干宽度", "en": "Branch Width" }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uSheetStrength": { "type": "float", "default": 0.58, "min": 0.0, "max": 2.0, "step": 0.01, "label": { "zh": "褶皱薄片", "en": "Folded Sheets" }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uFragmentStrength": { "type": "float", "default": 1.15, "min": 0.0, "max": 2.5, "step": 0.01, "label": { "zh": "细碎体积", "en": "Micro Fragments" }, "description": { "zh": "爆裂阶段启用的 cellular metaball-like 小体积碎片。", "en": "Burst-only cellular metaball-like micro-volume fragments." }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uFragmentScale": { "type": "float", "default": 0.82, "min": 0.35, "max": 1.8, "step": 0.01, "label": { "zh": "碎片尺寸", "en": "Fragment Scale" }, "group": { "zh": "爆裂", "en": "Burst" } },
+    "uCoreRemnant": { "type": "float", "default": 0.0, "min": 0.0, "max": 0.6, "step": 0.01, "label": { "zh": "中心残块", "en": "Core Remnants" }, "description": { "zh": "默认 0：爆裂后不保留完整中心球形核心。", "en": "Default zero: no intact spherical center remains after a burst." }, "group": { "zh": "爆裂", "en": "Burst" } },
+
+    "uAudioPaused": { "type": "boolean", "default": false, "label": { "zh": "暂停音乐", "en": "Pause Audio" }, "description": { "zh": "暂停音频驱动、自动节拍爆裂和波形运动；鼠标点击仍有效。", "en": "Pauses audio drive, automatic beat bursts and waveform motion; pointer bursts remain active." }, "group": { "zh": "音频", "en": "Audio" } },
+    "uAudioBurstEnabled": { "type": "boolean", "default": true, "label": { "zh": "音频触发爆裂", "en": "Audio Burst Trigger" }, "group": { "zh": "音频", "en": "Audio" } },
+    "uAudioBurstStrength": { "type": "float", "default": 0.78, "min": 0.0, "max": 2.5, "step": 0.01, "label": { "zh": "音频爆裂强度", "en": "Audio Burst Strength" }, "group": { "zh": "音频", "en": "Audio" } },
+    "uBeatThreshold": { "type": "float", "default": 0.71, "min": 0.45, "max": 0.95, "step": 0.01, "label": { "zh": "节拍阈值", "en": "Beat Threshold" }, "group": { "zh": "音频", "en": "Audio" } },
+    "uBeatCooldown": { "type": "float", "default": 0.82, "min": 0.2, "max": 3.0, "step": 0.01, "label": { "zh": "节拍冷却", "en": "Beat Cooldown" }, "group": { "zh": "音频", "en": "Audio" } },
+    "uAudioInfluence": { "type": "float", "default": 0.54, "min": 0.0, "max": 2.5, "step": 0.01, "label": { "zh": "音频呼吸", "en": "Audio Breathing" }, "group": { "zh": "音频", "en": "Audio" } },
+
+    "uSteps": { "type": "int", "default": 76, "min": 32, "max": 140, "step": 1, "label": { "zh": "光线步数", "en": "Ray Steps" }, "group": { "zh": "采样", "en": "Sampling" } },
+    "uJitter": { "type": "float", "default": 0.42, "min": 0.0, "max": 1.0, "step": 0.01, "label": { "zh": "采样抖动", "en": "Jitter" }, "group": { "zh": "采样", "en": "Sampling" } },
+    "uShadow": { "type": "float", "default": 1.12, "min": 0.0, "max": 4.0, "step": 0.01, "label": { "zh": "局部阴影", "en": "Local Shadow" }, "group": { "zh": "光照", "en": "Lighting" } },
+    "uGasColor": { "type": "color", "default": "#789dd0", "label": { "zh": "气体颜色", "en": "Gas Color" }, "group": { "zh": "外观", "en": "Appearance" } },
+    "uWaveColor": { "type": "color", "default": "#55d8ff", "label": { "zh": "波形颜色", "en": "Wave Color" }, "group": { "zh": "外观", "en": "Appearance" } },
+    "uUncappedBenchmark": { "type": "boolean", "default": false, "label": { "zh": "取消帧率限制", "en": "Uncapped Benchmark" }, "group": { "zh": "性能", "en": "Performance" } }
   }
 }
 @endshaderlab */
