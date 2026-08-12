@@ -84,6 +84,8 @@ export const experiments: ExperimentDefinition[] = [
     backend: 'raw-webgpu',
     languages: ['WGSL'],
     sourceFile: 'shader.wgsl',
+    renderScale: 0.85,
+    maxPixelRatio: 1.25,
     wgsl: chimneySmokeWGSL,
   }),
 ];
