@@ -24,6 +24,8 @@ export interface RendererBackend {
   setPointerState?(state: PointerState): void;
   setParameters(values: ParameterValues): void;
   render(elapsedSeconds: number): void;
+  /** Optional GPU completion fence used by uncapped benchmark loops. */
+  waitForSubmittedWork?(): Promise<void>;
   getSurfaceInfo(): BackendSurfaceInfo;
   dispose(): void;
 }

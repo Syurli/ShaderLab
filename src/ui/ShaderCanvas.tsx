@@ -31,6 +31,13 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
     let previousPointerX = pointerX;
     let previousPointerY = pointerY;
     let pointerDown = false;
+    let benchmarkQueued = false;
+
+    // requestAnimationFrame is synchronized to the display refresh rate. The optional
+    // benchmark mode uses MessageChannel and, when the backend supports it, waits for
+    // submitted GPU work before immediately scheduling the next frame. This avoids
+    // building an unbounded WebGPU queue while allowing throughput above display Hz.
+    const benchmarkChannel = new MessageChannel();
 
     const pushPointerState = () => {
       const dx = pointerX - previousPointerX;
@@ -95,6 +102,27 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
     let perfFrames = 0;
     let perfAccumulated = 0;
 
+    const uncappedBenchmarkEnabled = () => valuesRef.current.uUncappedBenchmark === true;
+
+    const queueBenchmarkFrame = () => {
+      if (disposed || benchmarkQueued) return;
+      benchmarkQueued = true;
+      benchmarkChannel.port2.postMessage(0);
+    };
+
+    const scheduleNext = () => {
+      if (!backend || disposed) return;
+      if (uncappedBenchmarkEnabled() && !document.hidden) {
+        if (backend.waitForSubmittedWork) {
+          void backend.waitForSubmittedWork().then(queueBenchmarkFrame, queueBenchmarkFrame);
+        } else {
+          queueBenchmarkFrame();
+        }
+      } else {
+        animationFrame = requestAnimationFrame(render);
+      }
+    };
+
     const render = (now: number) => {
       if (!backend || disposed) return;
       const elapsed = (now - startTime) / 1000;
@@ -108,20 +136,26 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
 
       if (now - perfWindowStart >= 500) {
         const surface = backend.getSurfaceInfo();
+        const uncapped = uncappedBenchmarkEnabled();
         onPerf({
           fps: (perfFrames * 1000) / (now - perfWindowStart),
           frameMs: perfAccumulated / Math.max(perfFrames, 1),
           width: surface.width,
           height: surface.height,
           drawCalls: surface.drawCalls,
-          renderer: surface.renderer,
+          renderer: uncapped ? `${surface.renderer} / uncapped` : surface.renderer,
         });
         perfFrames = 0;
         perfAccumulated = 0;
         perfWindowStart = now;
       }
 
-      animationFrame = requestAnimationFrame(render);
+      scheduleNext();
+    };
+
+    benchmarkChannel.port1.onmessage = () => {
+      benchmarkQueued = false;
+      render(performance.now());
     };
 
     const boot = async () => {
@@ -140,7 +174,7 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
         backend = nextBackend;
         pushPointerState();
         resize();
-        animationFrame = requestAnimationFrame(render);
+        scheduleNext();
       } catch (reason) {
         if (!disposed) {
           setError(reason instanceof Error ? reason.message : String(reason));
@@ -153,6 +187,8 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
     return () => {
       disposed = true;
       cancelAnimationFrame(animationFrame);
+      benchmarkChannel.port1.close();
+      benchmarkChannel.port2.close();
       canvas.removeEventListener('pointermove', onPointerMove);
       canvas.removeEventListener('pointerdown', onPointerDown);
       canvas.removeEventListener('pointerup', onPointerUp);

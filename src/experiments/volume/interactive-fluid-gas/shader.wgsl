@@ -45,7 +45,8 @@ fn csFluid(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   let uv = (vec2f(gid.xy) + 0.5) / f32(FLUID_SIZE);
-  let dt = frame.pointerDelta.z;
+  let substeps = max(params.uSolverSubsteps.x, 1.0);
+  let dt = frame.pointerDelta.z / substeps;
   let texel = 1.0 / f32(FLUID_SIZE);
   let current = fluidCell(i32(gid.x), i32(gid.y));
   let previousUv = uv - current.xy * dt * params.uAdvection.x;
@@ -61,6 +62,11 @@ fn csFluid(@builtin(global_invocation_id) gid: vec3u) {
   let neighborAverage = (left + right + down + up) * 0.25;
   velocity = mix(velocity, neighborAverage, clamp(params.uViscosity.x * dt * 12.0, 0.0, 0.45));
 
+  // Cheap curl feedback keeps wake structures alive without an additional pressure grid.
+  let curl = (right.y - left.y) - (up.x - down.x);
+  velocity += vec2f(-velocity.y, velocity.x) * curl * params.uVorticity.x * dt * 3.0;
+
+  // Persistent center forcing maintains an unstable outward-moving gas field.
   let centerDelta = uv - vec2f(0.5);
   let centerRadius = max(length(centerDelta), 0.001);
   let tangent = vec2f(-centerDelta.y, centerDelta.x) / centerRadius;
@@ -68,22 +74,73 @@ fn csFluid(@builtin(global_invocation_id) gid: vec3u) {
   let audioPulse = frame.pointer.w;
   velocity += tangent * centerFalloff * (0.08 + audioPulse * 0.14) * params.uTurbulence.x * dt;
   velocity += normalize(centerDelta + vec2f(0.0001)) * centerFalloff * params.uExpansion.x * 0.025 * dt;
-  dye += centerFalloff * (0.025 + audioPulse * 0.035) * dt;
+  dye += centerFalloff * (0.022 + audioPulse * 0.030) * dt;
 
+  // Pressing the pointer creates a moving solid circular obstacle. Instead of injecting
+  // a spherical velocity pulse, the obstacle enforces a local no-penetration condition,
+  // deflects incoming flow around its sides and sheds an alternating wake when moving.
   if (frame.pointer.z > 0.5) {
-    let mouseDelta = uv - frame.pointer.xy;
-    let radius = max(params.uMouseRadius.x, 0.005);
-    let influence = exp(-dot(mouseDelta, mouseDelta) / (radius * radius));
-    let radial = normalize(mouseDelta + vec2f(0.0001));
-    let mouseTangent = vec2f(-radial.y, radial.x);
-    let drag = frame.pointerDelta.xy * params.uMouseForce.x;
-    velocity += influence * (drag + radial * 0.30 + mouseTangent * 0.18) * dt * 8.0;
-    dye += influence * params.uMouseDye.x * dt * 4.0;
+    let obstacleDelta = uv - frame.pointer.xy;
+    let obstacleDistance = length(obstacleDelta);
+    let radius = max(params.uMouseRadius.x, 0.008);
+    let normal = obstacleDelta / max(obstacleDistance, 0.0001);
+    let core = 1.0 - smoothstep(radius * 0.70, radius, obstacleDistance);
+    let shell = 1.0 - smoothstep(radius * 0.95, radius * 2.10, obstacleDistance);
+    let coupling = clamp(params.uObstacleCoupling.x, 0.0, 1.0);
+
+    let rawObstacleVelocity = frame.pointerDelta.xy / max(frame.pointerDelta.z, 0.001);
+    let rawSpeed = length(rawObstacleVelocity);
+    let speedScale = min(1.0, 2.8 / max(rawSpeed, 0.001));
+    let obstacleVelocity = rawObstacleVelocity * speedScale * params.uMouseForce.x * 0.28;
+
+    let relativeVelocity = velocity - obstacleVelocity;
+    let inward = min(dot(relativeVelocity, normal), 0.0);
+    velocity -= normal * inward * shell * coupling;
+
+    let flowDir = normalize(velocity + vec2f(0.0001));
+    let flowTangent = vec2f(-flowDir.y, flowDir.x);
+    let sideCoordFlow = dot(obstacleDelta, flowTangent);
+    let sideSign = select(-1.0, 1.0, sideCoordFlow >= 0.0);
+    velocity += flowTangent
+      * sideSign
+      * (-inward)
+      * shell
+      * params.uObstacleDeflection.x
+      * coupling;
+
+    // Cells inside the solid follow the obstacle velocity and lose dye, producing a
+    // real void in the advected field rather than a bright radial injection.
+    velocity = mix(velocity, obstacleVelocity, clamp(core * coupling, 0.0, 1.0));
+    dye *= 1.0 - core * 0.98;
+
+    let obstacleSpeed = length(obstacleVelocity);
+    if (obstacleSpeed > 0.015) {
+      let axis = obstacleVelocity / obstacleSpeed;
+      let wakePerp = vec2f(-axis.y, axis.x);
+      let behind = dot(obstacleDelta, -axis);
+      let sideCoord = dot(obstacleDelta, wakePerp);
+      let wakeLong = smoothstep(0.0, radius * 0.55, behind)
+        * (1.0 - smoothstep(radius * 0.70, radius * 5.0, behind));
+      let wakeSide = exp(-(sideCoord * sideCoord) / max(radius * radius * 2.4, 0.0001));
+      let shed = sin(
+        behind / max(radius, 0.01) * 5.6
+        + frame.timeResolution.x * 8.0
+        + sideCoord / max(radius, 0.01) * 2.2
+      );
+      velocity += wakePerp
+        * shed
+        * wakeLong
+        * wakeSide
+        * min(obstacleSpeed, 2.8)
+        * params.uWakeStrength.x
+        * dt
+        * 2.4;
+    }
   }
 
   let speed = length(velocity);
-  if (speed > 1.4) {
-    velocity *= 1.4 / speed;
+  if (speed > 1.8) {
+    velocity *= 1.8 / speed;
   }
 
   let index = gid.y * FLUID_SIZE + gid.x;
@@ -117,8 +174,6 @@ fn noise3(p: vec3f) -> f32 {
   return mix(mix(nx00, nx10, f.y), mix(nx01, nx11, f.y), f.z);
 }
 
-// Three octaves are enough once the silhouette and internal breakup are separated.
-// The previous five-octave FBM was evaluated many times per ray step and dominated cost.
 fn fbm(pInput: vec3f) -> f32 {
   var p = pInput;
   var sum = 0.0;
@@ -131,30 +186,27 @@ fn fbm(pInput: vec3f) -> f32 {
   return sum;
 }
 
-fn rotateY(p: vec3f, angle: f32) -> vec3f {
-  let c = cos(angle);
-  let s = sin(angle);
-  return vec3f(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
-}
-
-fn densityField(pInput: vec3f) -> f32 {
+fn densityField(pInput: vec3f, cameraRight: vec3f, cameraUp: vec3f) -> f32 {
   let time = frame.timeResolution.x;
   let audio = frame.pointer.w;
-  let fluidUv = clamp(pInput.xy * 0.36 + vec2f(0.5), vec2f(0.0), vec2f(1.0));
+
+  // Project the 2D solver onto the current camera plane so pointer interaction remains
+  // spatially intuitive even after orbiting the camera.
+  let interactionPlane = vec2f(dot(pInput, cameraRight), dot(pInput, cameraUp));
+  let fluidUv = clamp(interactionPlane * 0.36 + vec2f(0.5), vec2f(0.0), vec2f(1.0));
   let fluid = sampleFluid(fluidUv);
 
   var p = pInput;
   let radius = max(length(p), 0.001);
   let direction = p / radius;
 
-  let fluidWarp = fluid.xy * params.uFluidInfluence.x * (0.55 + 0.45 * (1.0 - clamp(radius, 0.0, 1.0)));
-  p = vec3f(p.xy + fluidWarp, p.z);
+  let fluidWarp = fluid.xy
+    * params.uFluidInfluence.x
+    * (0.55 + 0.45 * (1.0 - clamp(radius, 0.0, 1.0)));
+  p += cameraRight * fluidWarp.x + cameraUp * fluidWarp.y;
 
   let travel = time * params.uExpansion.x;
   let radialPhase = radius * 9.0 - travel * 4.0;
-
-  // The visible boundary is no longer spherical. Low-frequency directional noise and
-  // several cheap angular lobes push and carve the radius independently in every direction.
   let shapeNoise = noise3(direction * 2.35 + vec3f(time * 0.055, -time * 0.043, time * 0.036));
   let lobeA = sin(direction.x * 7.3 + direction.y * 3.1 + time * 0.31);
   let lobeB = sin(direction.z * 8.1 - direction.x * 2.7 - time * 0.27);
@@ -168,7 +220,6 @@ fn densityField(pInput: vec3f) -> f32 {
     1.06,
   );
 
-  // A coarse FBM warp plus one cheap secondary noise creates rolling domain motion.
   let warpA = fbm(p * (params.uNoiseScale.x * 0.78) + direction * (travel * 0.50));
   let warpB = noise3(p.yzx * (params.uNoiseScale.x * 1.42) - direction.zxy * (travel * 0.36));
   p += vec3f(warpA - 0.5, warpB - 0.5, warpA - warpB) * params.uTurbulence.x * 0.24;
@@ -179,10 +230,7 @@ fn densityField(pInput: vec3f) -> f32 {
     sin(radialPhase * 0.57) * 0.75,
   ));
 
-  // Narrow, irregular envelope: the analytic sphere is only a ray bounds accelerator.
   let envelope = 1.0 - smoothstep(irregularRadius - 0.07, irregularRadius + 0.16, radius);
-
-  // Strong erosion keeps the cloud porous instead of filling the whole bounds.
   let porousSignal = detail + (warpA - 0.5) * 0.22 + fluid.z * 0.08;
   let porosity = smoothstep(params.uDetailCutoff.x, params.uDetailCutoff.x + 0.23, porousSignal);
   let coreOpen = smoothstep(0.13, 0.48, radius + (detail - 0.5) * 0.20);
@@ -190,12 +238,20 @@ fn densityField(pInput: vec3f) -> f32 {
   let shellBias = smoothstep(0.12, 0.76, radius / max(irregularRadius, 0.2));
   let fluidBoost = 1.0 + fluid.z * params.uFluidInfluence.x * 0.16;
 
+  var obstacleMask = 1.0;
+  if (frame.pointer.z > 0.5) {
+    let obstacleDistance = length(fluidUv - frame.pointer.xy);
+    let obstacleRadius = max(params.uMouseRadius.x, 0.008);
+    obstacleMask = smoothstep(obstacleRadius * 0.70, obstacleRadius * 1.15, obstacleDistance);
+  }
+
   let sparseDensity = envelope
     * coreOpen
     * porosity
     * (0.24 + rollingBands * 0.76)
     * (0.52 + shellBias * 0.48)
-    * fluidBoost;
+    * fluidBoost
+    * obstacleMask;
 
   return max(0.0, sparseDensity * params.uDensity.x);
 }
@@ -224,13 +280,24 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
   let screen = vec2f((in.uv.x * 2.0 - 1.0) * aspect, in.uv.y * 2.0 - 1.0);
   let time = frame.timeResolution.x;
 
-  var ro = vec3f(0.0, 0.0, 3.0);
-  var rd = normalize(vec3f(screen * vec2f(0.88, 0.88), -1.65));
-  let cameraAngle = sin(time * 0.11) * 0.10;
-  ro = rotateY(ro, cameraAngle);
-  rd = rotateY(rd, cameraAngle);
+  let degreesToRadians = 0.017453292519943295;
+  let yaw = (params.uCameraYaw.x + time * params.uCameraOrbitSpeed.x) * degreesToRadians;
+  let pitch = clamp(params.uCameraPitch.x, -85.0, 85.0) * degreesToRadians;
+  let cameraDistance = max(params.uCameraDistance.x, 1.35);
+  let cosPitch = cos(pitch);
+  let ro = vec3f(
+    sin(yaw) * cosPitch,
+    sin(pitch),
+    cos(yaw) * cosPitch,
+  ) * cameraDistance;
+  let forward = normalize(-ro);
+  let cameraRight = normalize(cross(forward, vec3f(0.0, 1.0, 0.0)));
+  let cameraUp = normalize(cross(cameraRight, forward));
+  let fovRadians = clamp(params.uCameraFov.x, 20.0, 100.0) * degreesToRadians;
+  let focalLength = 1.0 / tan(fovRadians * 0.5);
+  let rd = normalize(forward * focalLength + cameraRight * screen.x + cameraUp * screen.y);
 
-  // This sphere only clips the ray interval; densityField defines the visible shape.
+  // The analytic sphere only clips the ray interval; densityField defines the silhouette.
   let hit = intersectSphere(ro, rd, 1.22);
   var background = mix(vec3f(0.008, 0.012, 0.020), vec3f(0.035, 0.055, 0.080), in.uv.y);
   let vignette = 1.0 - 0.24 * dot(screen * 0.48, screen * 0.48);
@@ -252,11 +319,8 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
     for (var i = 0; i < 144; i += 1) {
       if (i >= steps) { break; }
       let p = ro + rd * t;
-      let density = densityField(p);
+      let density = densityField(p, cameraRight, cameraUp);
       if (density > 0.006) {
-        // The old shader called densityField three additional times per occupied sample
-        // for self-shadowing. A directional + local-density approximation preserves depth
-        // cues while removing the largest performance multiplier.
         let outward = normalize(p + vec3f(0.0001));
         let directional = clamp(dot(outward, lightDir) * 0.5 + 0.5, 0.0, 1.0);
         let localShadow = exp(-density * params.uShadow.x * 0.52);
@@ -289,10 +353,40 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
 {
   "version": 1,
   "parameters": {
+    "uCameraYaw": {
+      "type": "float", "default": 0.0, "min": -180.0, "max": 180.0, "step": 1.0,
+      "label": { "zh": "相机水平角", "en": "Camera Yaw" },
+      "description": { "zh": "围绕气体中心进行水平轨道旋转。", "en": "Horizontal orbit angle around the gas center." },
+      "group": { "zh": "相机", "en": "Camera" }
+    },
+    "uCameraPitch": {
+      "type": "float", "default": 0.0, "min": -80.0, "max": 80.0, "step": 1.0,
+      "label": { "zh": "相机俯仰角", "en": "Camera Pitch" },
+      "description": { "zh": "控制相机上下观察角度。", "en": "Controls the vertical camera orbit angle." },
+      "group": { "zh": "相机", "en": "Camera" }
+    },
+    "uCameraDistance": {
+      "type": "float", "default": 3.0, "min": 1.5, "max": 6.0, "step": 0.02,
+      "label": { "zh": "相机距离", "en": "Camera Distance" },
+      "description": { "zh": "控制相机到气体中心的距离。", "en": "Distance from the camera to the gas center." },
+      "group": { "zh": "相机", "en": "Camera" }
+    },
+    "uCameraFov": {
+      "type": "float", "default": 48.0, "min": 20.0, "max": 100.0, "step": 1.0,
+      "label": { "zh": "相机视野", "en": "Camera FOV" },
+      "description": { "zh": "垂直视野角度。", "en": "Vertical field of view in degrees." },
+      "group": { "zh": "相机", "en": "Camera" }
+    },
+    "uCameraOrbitSpeed": {
+      "type": "float", "default": 0.0, "min": -30.0, "max": 30.0, "step": 0.1,
+      "label": { "zh": "自动环绕速度", "en": "Auto Orbit Speed" },
+      "description": { "zh": "每秒自动增加的水平角度；设为 0 关闭自动环绕。", "en": "Yaw degrees added per second; set to 0 to disable auto orbit." },
+      "group": { "zh": "相机", "en": "Camera" }
+    },
     "uDensity": {
       "type": "float", "default": 0.95, "min": 0.1, "max": 3.0, "step": 0.01,
       "label": { "zh": "气体密度", "en": "Gas Density" },
-      "description": { "zh": "整体缩放稀疏体积密度；默认值降低以避免实心感。", "en": "Scales sparse volume density; the lower default avoids a solid appearance." },
+      "description": { "zh": "整体缩放稀疏体积密度。", "en": "Scales the sparse volume density." },
       "group": { "zh": "体积", "en": "Volume" }
     },
     "uAbsorption": {
@@ -304,19 +398,19 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
     "uSteps": {
       "type": "int", "default": 72, "min": 28, "max": 144, "step": 1,
       "label": { "zh": "光线步数", "en": "Ray Steps" },
-      "description": { "zh": "体积 raymarch 的采样步数；默认值针对实时交互优化。", "en": "Ray-marching sample count; the default is tuned for realtime interaction." },
+      "description": { "zh": "体积 raymarch 采样步数。", "en": "Volume ray-marching sample count." },
       "group": { "zh": "采样", "en": "Sampling" }
     },
     "uJitter": {
       "type": "float", "default": 0.82, "min": 0.0, "max": 1.0, "step": 0.01,
       "label": { "zh": "采样抖动", "en": "Jitter" },
-      "description": { "zh": "减弱较低步数下的固定采样带状伪影。", "en": "Reduces fixed-step banding at lower sample counts." },
+      "description": { "zh": "减弱低步数下的固定采样带状伪影。", "en": "Reduces fixed-step banding at lower sample counts." },
       "group": { "zh": "采样", "en": "Sampling" }
     },
     "uNoiseScale": {
       "type": "float", "default": 2.8, "min": 0.8, "max": 6.0, "step": 0.01,
       "label": { "zh": "噪声尺度", "en": "Noise Scale" },
-      "description": { "zh": "控制翻滚云团内部细节尺寸。", "en": "Controls the scale of internal rolling detail." },
+      "description": { "zh": "控制内部翻滚细节尺寸。", "en": "Controls the scale of internal rolling detail." },
       "group": { "zh": "形态", "en": "Shape" }
     },
     "uTurbulence": {
@@ -334,62 +428,86 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
     "uExpansion": {
       "type": "float", "default": 0.88, "min": 0.0, "max": 2.0, "step": 0.01,
       "label": { "zh": "向外扩散", "en": "Expansion" },
-      "description": { "zh": "控制径向传播速度和中心外推力。", "en": "Controls radial travelling speed and central outward force." },
+      "description": { "zh": "控制径向传播速度和中心外推力。", "en": "Controls radial travelling speed and center outward force." },
       "group": { "zh": "形态", "en": "Shape" }
     },
     "uDetailCutoff": {
       "type": "float", "default": 0.50, "min": 0.20, "max": 0.78, "step": 0.01,
       "label": { "zh": "细节侵蚀", "en": "Detail Erosion" },
-      "description": { "zh": "提高后会挖掉更多内部密度，形成更稀疏的破碎气体。", "en": "Higher values remove more internal density for a sparser, broken cloud." },
+      "description": { "zh": "提高后会挖掉更多内部密度。", "en": "Higher values remove more internal density." },
       "group": { "zh": "形态", "en": "Shape" }
     },
     "uFluidInfluence": {
       "type": "float", "default": 1.15, "min": 0.0, "max": 2.5, "step": 0.01,
       "label": { "zh": "流体影响", "en": "Fluid Influence" },
-      "description": { "zh": "二维速度/染料场对三维气体域扭曲与局部密度的影响。", "en": "How strongly the 2D velocity/dye field bends and locally thickens the 3D gas." },
-      "group": { "zh": "流体", "en": "Fluid" }
+      "description": { "zh": "二维速度场对三维气体扭曲的影响。", "en": "Influence of the 2D velocity field on the 3D gas warp." },
+      "group": { "zh": "流体解算", "en": "Fluid Solver" }
     },
     "uAdvection": {
       "type": "float", "default": 1.0, "min": 0.1, "max": 2.0, "step": 0.01,
       "label": { "zh": "平流速度", "en": "Advection" },
-      "description": { "zh": "二维半拉格朗日平流的回溯距离。", "en": "Backtrace distance for 2D semi-Lagrangian advection." },
-      "group": { "zh": "流体", "en": "Fluid" }
+      "description": { "zh": "半拉格朗日平流回溯距离。", "en": "Backtrace distance for semi-Lagrangian advection." },
+      "group": { "zh": "流体解算", "en": "Fluid Solver" }
     },
     "uViscosity": {
       "type": "float", "default": 0.18, "min": 0.0, "max": 1.0, "step": 0.01,
       "label": { "zh": "粘性", "en": "Viscosity" },
-      "description": { "zh": "控制速度场的邻域扩散。", "en": "Controls neighborhood diffusion of the velocity field." },
-      "group": { "zh": "流体", "en": "Fluid" }
+      "description": { "zh": "控制速度场邻域扩散。", "en": "Controls neighborhood diffusion of the velocity field." },
+      "group": { "zh": "流体解算", "en": "Fluid Solver" }
+    },
+    "uVorticity": {
+      "type": "float", "default": 0.8, "min": 0.0, "max": 3.0, "step": 0.01,
+      "label": { "zh": "涡量保持", "en": "Vorticity" },
+      "description": { "zh": "增强障碍物后方和中心区域的旋涡结构。", "en": "Preserves and strengthens vortical structures in wakes and around the center." },
+      "group": { "zh": "流体解算", "en": "Fluid Solver" }
     },
     "uVelocityDissipation": {
       "type": "float", "default": 0.48, "min": 0.0, "max": 3.0, "step": 0.01,
       "label": { "zh": "速度耗散", "en": "Velocity Dissipation" },
       "description": { "zh": "速度随时间衰减的速度。", "en": "Rate at which velocity decays over time." },
-      "group": { "zh": "流体", "en": "Fluid" }
+      "group": { "zh": "流体解算", "en": "Fluid Solver" }
     },
     "uDyeDissipation": {
       "type": "float", "default": 0.34, "min": 0.0, "max": 3.0, "step": 0.01,
-      "label": { "zh": "染料耗散", "en": "Dye Dissipation" },
-      "description": { "zh": "交互注入密度随时间消散的速度。", "en": "Rate at which injected dye density fades." },
-      "group": { "zh": "流体", "en": "Fluid" }
+      "label": { "zh": "密度耗散", "en": "Density Dissipation" },
+      "description": { "zh": "二维辅助密度场随时间消散的速度。", "en": "Rate at which the auxiliary 2D density field fades." },
+      "group": { "zh": "流体解算", "en": "Fluid Solver" }
     },
-    "uMouseForce": {
-      "type": "float", "default": 5.5, "min": 0.0, "max": 14.0, "step": 0.1,
-      "label": { "zh": "鼠标力度", "en": "Mouse Force" },
-      "description": { "zh": "按住并拖动时注入二维速度场的力度。", "en": "Velocity injected while pressing and dragging." },
-      "group": { "zh": "交互", "en": "Interaction" }
+    "uSolverSubsteps": {
+      "type": "int", "default": 1, "min": 1, "max": 4, "step": 1,
+      "label": { "zh": "解算子步", "en": "Solver Substeps" },
+      "description": { "zh": "每个渲染帧执行的流体 ping-pong 子步数；更高更稳定但增加计算。", "en": "Fluid ping-pong substeps per rendered frame; higher values improve stability at extra compute cost." },
+      "group": { "zh": "流体解算", "en": "Fluid Solver" }
     },
     "uMouseRadius": {
-      "type": "float", "default": 0.085, "min": 0.02, "max": 0.22, "step": 0.001,
-      "label": { "zh": "交互半径", "en": "Interaction Radius" },
-      "description": { "zh": "鼠标流体注入区域的半径。", "en": "Radius of the mouse fluid injection area." },
-      "group": { "zh": "交互", "en": "Interaction" }
+      "type": "float", "default": 0.075, "min": 0.02, "max": 0.22, "step": 0.001,
+      "label": { "zh": "固体半径", "en": "Obstacle Radius" },
+      "description": { "zh": "按住鼠标时二维固体障碍物的半径。", "en": "Radius of the 2D solid obstacle while the pointer is held." },
+      "group": { "zh": "固体交互", "en": "Solid Interaction" }
     },
-    "uMouseDye": {
-      "type": "float", "default": 1.25, "min": 0.0, "max": 3.0, "step": 0.01,
-      "label": { "zh": "交互密度", "en": "Interaction Dye" },
-      "description": { "zh": "点击/拖动向流场注入的染料密度。", "en": "Dye density injected by clicking or dragging." },
-      "group": { "zh": "交互", "en": "Interaction" }
+    "uMouseForce": {
+      "type": "float", "default": 3.0, "min": 0.0, "max": 10.0, "step": 0.1,
+      "label": { "zh": "固体移动速度", "en": "Obstacle Motion" },
+      "description": { "zh": "鼠标拖动速度传递给流体的倍率。", "en": "Multiplier for pointer motion transferred to the fluid." },
+      "group": { "zh": "固体交互", "en": "Solid Interaction" }
+    },
+    "uObstacleCoupling": {
+      "type": "float", "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+      "label": { "zh": "固体耦合", "en": "Obstacle Coupling" },
+      "description": { "zh": "控制无穿透边界和固体速度对流体的约束强度。", "en": "Strength of no-penetration and obstacle-velocity coupling." },
+      "group": { "zh": "固体交互", "en": "Solid Interaction" }
+    },
+    "uObstacleDeflection": {
+      "type": "float", "default": 1.4, "min": 0.0, "max": 3.0, "step": 0.01,
+      "label": { "zh": "绕流偏转", "en": "Flow Deflection" },
+      "description": { "zh": "增强气流沿固体两侧绕开的趋势。", "en": "Strengthens flow diversion around both sides of the solid." },
+      "group": { "zh": "固体交互", "en": "Solid Interaction" }
+    },
+    "uWakeStrength": {
+      "type": "float", "default": 1.1, "min": 0.0, "max": 3.0, "step": 0.01,
+      "label": { "zh": "尾涡强度", "en": "Wake Strength" },
+      "description": { "zh": "控制移动固体后方交替脱落的尾涡。", "en": "Controls alternating wake shedding behind a moving obstacle." },
+      "group": { "zh": "固体交互", "en": "Solid Interaction" }
     },
     "uAudioInfluence": {
       "type": "float", "default": 1.0, "min": 0.0, "max": 2.5, "step": 0.01,
@@ -400,7 +518,7 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
     "uShadow": {
       "type": "float", "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.01,
       "label": { "zh": "局部阴影", "en": "Local Shadow" },
-      "description": { "zh": "控制低成本局部密度衰减阴影，不再额外进行多次密度采样。", "en": "Controls low-cost local-density shadowing without extra volume density probes." },
+      "description": { "zh": "控制低成本局部密度阴影。", "en": "Controls low-cost local-density shadowing." },
       "group": { "zh": "光照", "en": "Lighting" }
     },
     "uGasColor": {
@@ -414,6 +532,12 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
       "label": { "zh": "波形颜色", "en": "Wave Color" },
       "description": { "zh": "底部音频波动曲线颜色。", "en": "Color of the audio waveform drawn at the bottom." },
       "group": { "zh": "外观", "en": "Appearance" }
+    },
+    "uUncappedBenchmark": {
+      "type": "boolean", "default": false,
+      "label": { "zh": "取消帧率限制", "en": "Uncapped Benchmark" },
+      "description": { "zh": "关闭 rAF 的显示刷新率同步，并在上一批 WebGPU 工作完成后立即提交下一帧，用于测试 GPU 极限吞吐；开启时可能显著增加功耗。", "en": "Bypasses display-synchronized rAF and submits the next frame as soon as prior WebGPU work completes to benchmark GPU throughput; this can substantially increase power use." },
+      "group": { "zh": "性能", "en": "Performance" }
     }
   }
 }
