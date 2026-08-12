@@ -151,7 +151,7 @@ fn densityField(pInput: vec3f) -> f32 {
   let direction = p / radius;
 
   // The 2D simulation bends the XY domain while its dye thickens the volume.
-  p.xy += fluid.xy * params.uFluidInfluence.x * (0.7 + 0.3 * (1.0 - clamp(radius, 0.0, 1.0)));
+  p.xy = p.xy + fluid.xy * params.uFluidInfluence.x * (0.7 + 0.3 * (1.0 - clamp(radius, 0.0, 1.0)));
 
   // Radially travelling domain warp creates the outward rolling/billowing motion.
   let travel = time * params.uExpansion.x;
