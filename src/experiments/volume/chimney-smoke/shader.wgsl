@@ -178,9 +178,9 @@ fn fsMain(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
 
   let yaw = (pointer.x - 0.5) * 0.78;
   let pitch = (pointer.y - 0.5) * 0.34;
-  let target = vec3f(0.0, 0.30, 0.0);
+  let cameraTarget = vec3f(0.0, 0.30, 0.0);
   let ro = vec3f(sin(yaw) * 3.25, 0.28 + pitch * 1.8, cos(yaw) * 3.25);
-  let forward = normalize(target - ro);
+  let forward = normalize(cameraTarget - ro);
   let right = normalize(cross(forward, vec3f(0.0, 1.0, 0.0)));
   let up = normalize(cross(right, forward));
 
