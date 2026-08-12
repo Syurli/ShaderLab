@@ -1,5 +1,7 @@
 # ShaderLab
 
+https://syurli.github.io/ShaderLab/
+
 Realtime shader experiments for WebGL / WebGPU.
 
 一个用于长期积累实时图形实验的静态 Shader 实验库：WebGL、WebGPU、WGSL、GLSL、SDF、Ray Marching、体积渲染、Compute、后处理等。
