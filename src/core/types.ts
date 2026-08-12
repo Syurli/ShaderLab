@@ -5,7 +5,7 @@ export interface LocalizedText {
   en: string;
 }
 
-export type Backend = 'webgl2' | 'webgpu' | 'auto' | 'raw-webgpu';
+export type Backend = 'webgl2' | 'webgpu' | 'auto' | 'raw-webgpu' | 'fluid-webgpu';
 export type ShaderLanguage = 'GLSL' | 'WGSL' | 'TSL';
 export type ParameterType = 'float' | 'int' | 'boolean' | 'color' | 'enum';
 

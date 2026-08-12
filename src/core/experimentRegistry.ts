@@ -5,6 +5,7 @@ import uvGradientFragment from '../experiments/basics/uv-gradient/shader.frag?ra
 import sdfSphereFragment from '../experiments/raymarch/sdf-sphere/shader.frag?raw';
 import basicVolumeFragment from '../experiments/volume/basic-volume/shader.frag?raw';
 import chimneySmokeWGSL from '../experiments/volume/chimney-smoke/shader.wgsl?raw';
+import interactiveFluidGasWGSL from '../experiments/volume/interactive-fluid-gas/shader.wgsl?raw';
 
 type ExperimentInput = Omit<ExperimentDefinition, 'metadata'>;
 
@@ -87,6 +88,22 @@ export const experiments: ExperimentDefinition[] = [
     renderScale: 1.0,
     maxPixelRatio: 1.25,
     wgsl: chimneySmokeWGSL,
+  }),
+  defineExperiment({
+    id: 'interactive-fluid-gas',
+    title: { zh: '交互式翻涌气体团', en: 'Interactive Rolling Gas Cloud' },
+    description: {
+      zh: 'Raw WebGPU + WGSL 的交互式体积气体团：中心持续向外扩散并翻滚，通过 96×96 半拉格朗日二维流场接收鼠标点击/拖拽注入，并由合成音频包络和底部波形曲线驱动呼吸与涡旋。',
+      en: 'An interactive Raw WebGPU + WGSL volume cloud that continuously expands and rolls from the center, receives click/drag injection through a 96×96 semi-Lagrangian 2D flow field, and reacts to a deterministic synthetic audio envelope with a waveform overlay.',
+    },
+    category: { zh: '体积', en: 'Volume' },
+    tags: ['WebGPU', 'WGSL', 'Volume', 'Fluid', 'Interactive', 'Audio Reactive', 'Raymarch'],
+    backend: 'fluid-webgpu',
+    languages: ['WGSL'],
+    sourceFile: 'shader.wgsl',
+    renderScale: 0.9,
+    maxPixelRatio: 1.2,
+    wgsl: interactiveFluidGasWGSL,
   }),
 ];
 
