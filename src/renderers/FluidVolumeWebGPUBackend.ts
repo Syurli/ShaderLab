@@ -262,7 +262,7 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
   render(elapsedSeconds: number) {
     if (!this.device || !this.context || !this.computePipeline || !this.renderPipeline || !this.uniformBindGroup || !this.frameBuffer) return;
 
-    const dt = Math.min(1 / 30, Math.max(1 / 240, elapsedSeconds - this.lastElapsed || 1 / 60));
+    const dt = Math.min(1 / 30, Math.max(1 / 1000, elapsedSeconds - this.lastElapsed || 1 / 60));
     this.lastElapsed = elapsedSeconds;
     const audio = 0.52
       + Math.sin(elapsedSeconds * 2.17) * 0.18
@@ -275,15 +275,17 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
     ]);
     this.device.queue.writeBuffer(this.frameBuffer, 0, frame);
 
+    const substeps = Math.max(1, Math.min(4, Math.round(Number(this.values.uSolverSubsteps ?? 1))));
     const encoder = this.device.createCommandEncoder({ label: 'fluid-volume frame' });
     const computePass = encoder.beginComputePass({ label: '2D fluid advection' });
     computePass.setPipeline(this.computePipeline);
     computePass.setBindGroup(0, this.uniformBindGroup);
-    computePass.setBindGroup(1, this.fluidBindGroups[this.sourceIndex]);
-    computePass.dispatchWorkgroups(Math.ceil(FLUID_SIZE / 8), Math.ceil(FLUID_SIZE / 8));
+    for (let substep = 0; substep < substeps; substep += 1) {
+      computePass.setBindGroup(1, this.fluidBindGroups[this.sourceIndex]);
+      computePass.dispatchWorkgroups(Math.ceil(FLUID_SIZE / 8), Math.ceil(FLUID_SIZE / 8));
+      this.sourceIndex = 1 - this.sourceIndex;
+    }
     computePass.end();
-
-    this.sourceIndex = 1 - this.sourceIndex;
 
     const renderPass = encoder.beginRenderPass({
       colorAttachments: [{
@@ -300,16 +302,22 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
     renderPass.end();
     this.device.queue.submit([encoder.finish()]);
 
-    // Pointer impulses should be consumed once instead of accumulating forever.
+    // Pointer movement is an obstacle velocity impulse. Consume dx/dy once while
+    // retaining the pressed state so a stationary obstacle continues blocking flow.
     this.pointer = { ...this.pointer, dx: 0, dy: 0 };
   }
 
+  waitForSubmittedWork() {
+    return this.device?.queue.onSubmittedWorkDone() ?? Promise.resolve();
+  }
+
   getSurfaceInfo(): BackendSurfaceInfo {
+    const substeps = Math.max(1, Math.min(4, Math.round(Number(this.values.uSolverSubsteps ?? 1))));
     return {
       width: this.width,
       height: this.height,
-      drawCalls: 2,
-      renderer: `Raw WebGPU / WGSL + ${FLUID_SIZE}² fluid`,
+      drawCalls: 1 + substeps,
+      renderer: `Raw WebGPU / WGSL + ${FLUID_SIZE}² fluid ×${substeps}`,
     };
   }
 

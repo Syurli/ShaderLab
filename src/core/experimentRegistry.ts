@@ -93,8 +93,8 @@ export const experiments: ExperimentDefinition[] = [
     id: 'interactive-fluid-gas',
     title: { zh: '交互式翻涌气体团', en: 'Interactive Rolling Gas Cloud' },
     description: {
-      zh: 'Raw WebGPU + WGSL 的交互式稀疏体积气体团：以方向噪声和大尺度凹凸破坏球形轮廓，通过侵蚀形成内部空隙，并由 96×96 半拉格朗日二维流场接收鼠标点击/拖拽注入；渲染路径针对实时性能减少了体积步数和昂贵的重复阴影采样。',
-      en: 'An interactive sparse Raw WebGPU + WGSL gas volume with direction-dependent silhouette breakup, internal erosion and voids, click/drag injection through a 96×96 semi-Lagrangian 2D flow field, and a realtime-oriented render path with fewer ray steps and no repeated expensive shadow density probes.',
+      zh: 'Raw WebGPU + WGSL 的交互式稀疏体积气体团：可调轨道相机，96×96 半拉格朗日二维流场支持多子步、涡量保持和鼠标移动固体障碍物；障碍物通过无穿透边界、绕流偏转、尾涡脱落与体积挖空扰动气体，并提供取消显示刷新率同步的 GPU 吞吐基准模式。',
+      en: 'An interactive sparse Raw WebGPU + WGSL gas volume with an adjustable orbit camera, a 96×96 semi-Lagrangian flow field with solver substeps and vorticity retention, and a moving pointer-controlled solid obstacle using no-penetration, flow deflection, wake shedding and volume cutout. It also exposes an uncapped GPU-throughput benchmark mode.',
     },
     category: { zh: '体积', en: 'Volume' },
     tags: ['WebGPU', 'WGSL', 'Volume', 'Fluid', 'Interactive', 'Audio Reactive', 'Raymarch'],
