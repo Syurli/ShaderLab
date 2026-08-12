@@ -45,6 +45,10 @@ export interface ExperimentDefinition {
   vertexShader?: string;
   fragmentShader?: string;
   wgsl?: string;
+  /** Multiplier applied to the physical drawing-buffer size. Useful for expensive fullscreen effects. */
+  renderScale?: number;
+  /** Upper bound for devicePixelRatio used by the renderer. */
+  maxPixelRatio?: number;
   metadata: ShaderLabMetadata;
 }
 
