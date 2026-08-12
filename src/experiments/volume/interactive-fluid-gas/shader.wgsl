@@ -150,8 +150,10 @@ fn densityField(pInput: vec3f) -> f32 {
   let radius = max(length(p), 0.001);
   let direction = p / radius;
 
-  // The 2D simulation bends the XY domain while its dye thickens the volume.
-  p.xy = p.xy + fluid.xy * params.uFluidInfluence.x * (0.7 + 0.3 * (1.0 - clamp(radius, 0.0, 1.0)));
+  // WGSL swizzles are value expressions, not assignable l-values. Rebuild the
+  // complete vec3 instead of assigning to p.xy.
+  let fluidWarp = fluid.xy * params.uFluidInfluence.x * (0.7 + 0.3 * (1.0 - clamp(radius, 0.0, 1.0)));
+  p = vec3f(p.xy + fluidWarp, p.z);
 
   // Radially travelling domain warp creates the outward rolling/billowing motion.
   let travel = time * params.uExpansion.x;
