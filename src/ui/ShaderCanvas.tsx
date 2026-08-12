@@ -28,6 +28,27 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
     let disposed = false;
     let pointerX = 0.5;
     let pointerY = 0.5;
+    let previousPointerX = pointerX;
+    let previousPointerY = pointerY;
+    let pointerDown = false;
+
+    const pushPointerState = () => {
+      const dx = pointerX - previousPointerX;
+      const dy = pointerY - previousPointerY;
+      if (backend?.setPointerState) {
+        backend.setPointerState({ x: pointerX, y: pointerY, down: pointerDown, dx, dy });
+      } else {
+        backend?.setPointer(pointerX, pointerY);
+      }
+      previousPointerX = pointerX;
+      previousPointerY = pointerY;
+    };
+
+    const updatePointerPosition = (event: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      pointerX = (event.clientX - rect.left) / Math.max(rect.width, 1);
+      pointerY = 1 - (event.clientY - rect.top) / Math.max(rect.height, 1);
+    };
 
     const resize = () => {
       if (!backend) return;
@@ -43,12 +64,30 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
     observer.observe(canvas);
 
     const onPointerMove = (event: PointerEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      pointerX = (event.clientX - rect.left) / Math.max(rect.width, 1);
-      pointerY = 1 - (event.clientY - rect.top) / Math.max(rect.height, 1);
-      backend?.setPointer(pointerX, pointerY);
+      updatePointerPosition(event);
+      pushPointerState();
     };
+    const onPointerDown = (event: PointerEvent) => {
+      canvas.setPointerCapture(event.pointerId);
+      updatePointerPosition(event);
+      pointerDown = true;
+      pushPointerState();
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      updatePointerPosition(event);
+      pointerDown = false;
+      pushPointerState();
+      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    };
+    const onPointerCancel = () => {
+      pointerDown = false;
+      pushPointerState();
+    };
+
     canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointerup', onPointerUp);
+    canvas.addEventListener('pointercancel', onPointerCancel);
 
     const startTime = performance.now();
     let lastFrameTime = startTime;
@@ -99,7 +138,7 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
           return;
         }
         backend = nextBackend;
-        backend.setPointer(pointerX, pointerY);
+        pushPointerState();
         resize();
         animationFrame = requestAnimationFrame(render);
       } catch (reason) {
@@ -115,6 +154,9 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
       disposed = true;
       cancelAnimationFrame(animationFrame);
       canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerdown', onPointerDown);
+      canvas.removeEventListener('pointerup', onPointerUp);
+      canvas.removeEventListener('pointercancel', onPointerCancel);
       observer.disconnect();
       backend?.dispose();
     };
