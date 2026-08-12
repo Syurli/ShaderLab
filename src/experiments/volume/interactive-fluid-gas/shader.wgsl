@@ -54,8 +54,6 @@ fn csFluid(@builtin(global_invocation_id) gid: vec3u) {
   var velocity = advected.xy * exp(-params.uVelocityDissipation.x * dt);
   var dye = advected.z * exp(-params.uDyeDissipation.x * dt);
 
-  // Lightweight viscosity/diffusion step. Together with semi-Lagrangian advection this
-  // forms the interactive 2D flow field that drives the 3D volume.
   let left = sampleFluid(uv - vec2f(texel, 0.0)).xy;
   let right = sampleFluid(uv + vec2f(texel, 0.0)).xy;
   let down = sampleFluid(uv - vec2f(0.0, texel)).xy;
@@ -63,7 +61,6 @@ fn csFluid(@builtin(global_invocation_id) gid: vec3u) {
   let neighborAverage = (left + right + down + up) * 0.25;
   velocity = mix(velocity, neighborAverage, clamp(params.uViscosity.x * dt * 12.0, 0.0, 0.45));
 
-  // Permanent unstable vortex forcing around the center keeps the gas rolling outward.
   let centerDelta = uv - vec2f(0.5);
   let centerRadius = max(length(centerDelta), 0.001);
   let tangent = vec2f(-centerDelta.y, centerDelta.x) / centerRadius;
@@ -73,8 +70,6 @@ fn csFluid(@builtin(global_invocation_id) gid: vec3u) {
   velocity += normalize(centerDelta + vec2f(0.0001)) * centerFalloff * params.uExpansion.x * 0.025 * dt;
   dye += centerFalloff * (0.025 + audioPulse * 0.035) * dt;
 
-  // Click/drag injection: drag direction adds velocity, while a click also creates a
-  // radial/tangential impulse so a stationary press is visible immediately.
   if (frame.pointer.z > 0.5) {
     let mouseDelta = uv - frame.pointer.xy;
     let radius = max(params.uMouseRadius.x, 0.005);
@@ -122,13 +117,15 @@ fn noise3(p: vec3f) -> f32 {
   return mix(mix(nx00, nx10, f.y), mix(nx01, nx11, f.y), f.z);
 }
 
+// Three octaves are enough once the silhouette and internal breakup are separated.
+// The previous five-octave FBM was evaluated many times per ray step and dominated cost.
 fn fbm(pInput: vec3f) -> f32 {
   var p = pInput;
   var sum = 0.0;
-  var amplitude = 0.54;
-  for (var octave = 0; octave < 5; octave += 1) {
+  var amplitude = 0.56;
+  for (var octave = 0; octave < 3; octave += 1) {
     sum += noise3(p) * amplitude;
-    p = p * 2.03 + vec3f(7.1, 13.7, 5.3);
+    p = p * 2.07 + vec3f(7.1, 13.7, 5.3);
     amplitude *= 0.48;
   }
   return sum;
@@ -143,40 +140,64 @@ fn rotateY(p: vec3f, angle: f32) -> vec3f {
 fn densityField(pInput: vec3f) -> f32 {
   let time = frame.timeResolution.x;
   let audio = frame.pointer.w;
-  let fluidUv = clamp(pInput.xy * 0.33 + vec2f(0.5), vec2f(0.0), vec2f(1.0));
+  let fluidUv = clamp(pInput.xy * 0.36 + vec2f(0.5), vec2f(0.0), vec2f(1.0));
   let fluid = sampleFluid(fluidUv);
 
   var p = pInput;
   let radius = max(length(p), 0.001);
   let direction = p / radius;
 
-  // WGSL swizzles are value expressions, not assignable l-values. Rebuild the
-  // complete vec3 instead of assigning to p.xy.
-  let fluidWarp = fluid.xy * params.uFluidInfluence.x * (0.7 + 0.3 * (1.0 - clamp(radius, 0.0, 1.0)));
+  let fluidWarp = fluid.xy * params.uFluidInfluence.x * (0.55 + 0.45 * (1.0 - clamp(radius, 0.0, 1.0)));
   p = vec3f(p.xy + fluidWarp, p.z);
 
-  // Radially travelling domain warp creates the outward rolling/billowing motion.
   let travel = time * params.uExpansion.x;
-  let radialPhase = radius * 7.5 - travel * 3.2;
-  let warpA = fbm(p * params.uNoiseScale.x + direction * (travel * 0.65));
-  let warpB = fbm(p.yzx * (params.uNoiseScale.x * 1.73) - direction.zxy * (travel * 0.48));
-  p += vec3f(warpA - 0.5, warpB - 0.5, warpA - warpB) * params.uTurbulence.x * 0.32;
+  let radialPhase = radius * 9.0 - travel * 4.0;
 
-  let detail = fbm(p * params.uNoiseScale.x * 1.35 + vec3f(
-    sin(radialPhase),
-    cos(radialPhase * 0.83),
-    sin(radialPhase * 0.61),
+  // The visible boundary is no longer spherical. Low-frequency directional noise and
+  // several cheap angular lobes push and carve the radius independently in every direction.
+  let shapeNoise = noise3(direction * 2.35 + vec3f(time * 0.055, -time * 0.043, time * 0.036));
+  let lobeA = sin(direction.x * 7.3 + direction.y * 3.1 + time * 0.31);
+  let lobeB = sin(direction.z * 8.1 - direction.x * 2.7 - time * 0.27);
+  let lobeC = sin((direction.x + direction.z) * 5.4 + direction.y * 6.6 + time * 0.19);
+  let irregularity = params.uIrregularity.x;
+  let lobeOffset = (lobeA * 0.11 + lobeB * 0.075 + lobeC * 0.055) * irregularity;
+  let breathing = (audio - 0.5) * params.uAudioInfluence.x * 0.055;
+  let irregularRadius = clamp(
+    0.66 + (shapeNoise - 0.5) * 0.50 * irregularity + lobeOffset + breathing,
+    0.34,
+    1.06,
+  );
+
+  // A coarse FBM warp plus one cheap secondary noise creates rolling domain motion.
+  let warpA = fbm(p * (params.uNoiseScale.x * 0.78) + direction * (travel * 0.50));
+  let warpB = noise3(p.yzx * (params.uNoiseScale.x * 1.42) - direction.zxy * (travel * 0.36));
+  p += vec3f(warpA - 0.5, warpB - 0.5, warpA - warpB) * params.uTurbulence.x * 0.24;
+
+  let detail = fbm(p * params.uNoiseScale.x * 1.48 + vec3f(
+    sin(radialPhase) * 0.75,
+    cos(radialPhase * 0.79) * 0.70,
+    sin(radialPhase * 0.57) * 0.75,
   ));
 
-  let breathingRadius = 0.70 + audio * params.uAudioInfluence.x * 0.18;
-  let rollingBoundary = breathingRadius + (detail - 0.48) * 0.55 + sin(radialPhase + detail * 4.0) * 0.055;
-  let envelope = 1.0 - smoothstep(rollingBoundary, rollingBoundary + 0.34, radius);
-  let hollow = smoothstep(0.10, 0.42, radius + detail * 0.10);
-  let rollingBands = 0.68 + 0.32 * sin(radialPhase * 1.15 + detail * 6.0);
-  let breakup = smoothstep(params.uDetailCutoff.x, 0.92, detail + fluid.z * 0.20);
+  // Narrow, irregular envelope: the analytic sphere is only a ray bounds accelerator.
+  let envelope = 1.0 - smoothstep(irregularRadius - 0.07, irregularRadius + 0.16, radius);
 
-  let fluidDensity = fluid.z * params.uFluidInfluence.x * 0.28 * (1.0 - smoothstep(0.9, 1.45, radius));
-  return max(0.0, (envelope * hollow * (0.48 + breakup * 0.78) * (0.80 + rollingBands * 0.28) + fluidDensity) * params.uDensity.x);
+  // Strong erosion keeps the cloud porous instead of filling the whole bounds.
+  let porousSignal = detail + (warpA - 0.5) * 0.22 + fluid.z * 0.08;
+  let porosity = smoothstep(params.uDetailCutoff.x, params.uDetailCutoff.x + 0.23, porousSignal);
+  let coreOpen = smoothstep(0.13, 0.48, radius + (detail - 0.5) * 0.20);
+  let rollingBands = 0.5 + 0.5 * sin(radialPhase * 1.18 + detail * 8.5 + direction.y * 4.2);
+  let shellBias = smoothstep(0.12, 0.76, radius / max(irregularRadius, 0.2));
+  let fluidBoost = 1.0 + fluid.z * params.uFluidInfluence.x * 0.16;
+
+  let sparseDensity = envelope
+    * coreOpen
+    * porosity
+    * (0.24 + rollingBands * 0.76)
+    * (0.52 + shellBias * 0.48)
+    * fluidBoost;
+
+  return max(0.0, sparseDensity * params.uDensity.x);
 }
 
 fn intersectSphere(ro: vec3f, rd: vec3f, radius: f32) -> vec2f {
@@ -203,23 +224,24 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
   let screen = vec2f((in.uv.x * 2.0 - 1.0) * aspect, in.uv.y * 2.0 - 1.0);
   let time = frame.timeResolution.x;
 
-  var ro = vec3f(0.0, 0.0, 3.15);
+  var ro = vec3f(0.0, 0.0, 3.0);
   var rd = normalize(vec3f(screen * vec2f(0.88, 0.88), -1.65));
   let cameraAngle = sin(time * 0.11) * 0.10;
   ro = rotateY(ro, cameraAngle);
   rd = rotateY(rd, cameraAngle);
 
-  let hit = intersectSphere(ro, rd, 1.48);
+  // This sphere only clips the ray interval; densityField defines the visible shape.
+  let hit = intersectSphere(ro, rd, 1.22);
   var background = mix(vec3f(0.008, 0.012, 0.020), vec3f(0.035, 0.055, 0.080), in.uv.y);
   let vignette = 1.0 - 0.24 * dot(screen * 0.48, screen * 0.48);
   background *= max(vignette, 0.55);
 
   var color = background;
   if (hit.y > max(hit.x, 0.0)) {
-    let steps = clamp(i32(params.uSteps.x), 24, 192);
+    let steps = clamp(i32(params.uSteps.x), 28, 144);
     let startT = max(hit.x, 0.0);
-    let travel = hit.y - startT;
-    let stepLength = travel / f32(steps);
+    let travelDistance = hit.y - startT;
+    let stepLength = travelDistance / f32(steps);
     let jitter = (hash31(vec3f(in.position.xy, fract(time))) - 0.5) * stepLength * params.uJitter.x;
     var t = startT + jitter;
     var transmittance = 1.0;
@@ -227,29 +249,30 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
     let lightDir = normalize(vec3f(-0.55, 0.72, 0.42));
     let gasColor = params.uGasColor.xyz;
 
-    for (var i = 0; i < 192; i += 1) {
+    for (var i = 0; i < 144; i += 1) {
       if (i >= steps) { break; }
       let p = ro + rd * t;
       let density = densityField(p);
-      if (density > 0.004) {
-        let shadowDensity = densityField(p + lightDir * 0.10)
-          + densityField(p + lightDir * 0.22) * 0.62
-          + densityField(p + lightDir * 0.38) * 0.34;
-        let light = 0.22 + 0.78 * exp(-shadowDensity * params.uShadow.x);
-        let rim = pow(1.0 - abs(dot(normalize(p + vec3f(0.0001)), -rd)), 2.2);
-        let sampleColor = gasColor * (light + rim * 0.22 + frame.pointer.w * params.uAudioInfluence.x * 0.08);
+      if (density > 0.006) {
+        // The old shader called densityField three additional times per occupied sample
+        // for self-shadowing. A directional + local-density approximation preserves depth
+        // cues while removing the largest performance multiplier.
+        let outward = normalize(p + vec3f(0.0001));
+        let directional = clamp(dot(outward, lightDir) * 0.5 + 0.5, 0.0, 1.0);
+        let localShadow = exp(-density * params.uShadow.x * 0.52);
+        let light = 0.24 + 0.76 * directional * localShadow;
+        let rim = pow(1.0 - abs(dot(outward, -rd)), 2.0);
+        let sampleColor = gasColor * (light + rim * 0.28 + frame.pointer.w * params.uAudioInfluence.x * 0.06);
         let alpha = 1.0 - exp(-density * params.uAbsorption.x * stepLength);
         scattering += transmittance * alpha * sampleColor;
         transmittance *= 1.0 - alpha;
-        if (transmittance < 0.018) { break; }
+        if (transmittance < 0.025) { break; }
       }
       t += stepLength;
     }
     color = scattering + background * transmittance;
   }
 
-  // Audio-reactive waveform overlay. It is deliberately synthetic and deterministic so
-  // the demo works on GitHub Pages without microphone permissions.
   let waveX = in.uv.x * 2.0 - 1.0;
   let wave = -0.79 + waveform(waveX, time) * (0.025 + frame.pointer.w * 0.018) * params.uAudioInfluence.x;
   let lineDistance = abs(screen.y - wave);
@@ -267,57 +290,63 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
   "version": 1,
   "parameters": {
     "uDensity": {
-      "type": "float", "default": 1.55, "min": 0.2, "max": 4.0, "step": 0.01,
+      "type": "float", "default": 0.95, "min": 0.1, "max": 3.0, "step": 0.01,
       "label": { "zh": "气体密度", "en": "Gas Density" },
-      "description": { "zh": "整体缩放体积密度。", "en": "Scales the overall gas density." },
+      "description": { "zh": "整体缩放稀疏体积密度；默认值降低以避免实心感。", "en": "Scales sparse volume density; the lower default avoids a solid appearance." },
       "group": { "zh": "体积", "en": "Volume" }
     },
     "uAbsorption": {
-      "type": "float", "default": 3.1, "min": 0.2, "max": 8.0, "step": 0.01,
+      "type": "float", "default": 2.15, "min": 0.2, "max": 8.0, "step": 0.01,
       "label": { "zh": "吸收", "en": "Absorption" },
       "description": { "zh": "Beer-Lambert 吸收强度。", "en": "Beer-Lambert absorption strength." },
       "group": { "zh": "体积", "en": "Volume" }
     },
     "uSteps": {
-      "type": "int", "default": 112, "min": 48, "max": 192, "step": 1,
+      "type": "int", "default": 72, "min": 28, "max": 144, "step": 1,
       "label": { "zh": "光线步数", "en": "Ray Steps" },
-      "description": { "zh": "体积 raymarch 的采样步数。", "en": "Ray-marching sample count." },
+      "description": { "zh": "体积 raymarch 的采样步数；默认值针对实时交互优化。", "en": "Ray-marching sample count; the default is tuned for realtime interaction." },
       "group": { "zh": "采样", "en": "Sampling" }
     },
     "uJitter": {
-      "type": "float", "default": 0.78, "min": 0.0, "max": 1.0, "step": 0.01,
+      "type": "float", "default": 0.82, "min": 0.0, "max": 1.0, "step": 0.01,
       "label": { "zh": "采样抖动", "en": "Jitter" },
-      "description": { "zh": "减弱固定步长造成的带状伪影。", "en": "Reduces fixed-step banding." },
+      "description": { "zh": "减弱较低步数下的固定采样带状伪影。", "en": "Reduces fixed-step banding at lower sample counts." },
       "group": { "zh": "采样", "en": "Sampling" }
     },
     "uNoiseScale": {
-      "type": "float", "default": 2.55, "min": 0.8, "max": 6.0, "step": 0.01,
+      "type": "float", "default": 2.8, "min": 0.8, "max": 6.0, "step": 0.01,
       "label": { "zh": "噪声尺度", "en": "Noise Scale" },
-      "description": { "zh": "控制翻滚云团的空间细节尺寸。", "en": "Controls the spatial size of rolling detail." },
+      "description": { "zh": "控制翻滚云团内部细节尺寸。", "en": "Controls the scale of internal rolling detail." },
       "group": { "zh": "形态", "en": "Shape" }
     },
     "uTurbulence": {
-      "type": "float", "default": 1.20, "min": 0.0, "max": 2.5, "step": 0.01,
+      "type": "float", "default": 1.55, "min": 0.0, "max": 2.8, "step": 0.01,
       "label": { "zh": "翻涌扰动", "en": "Turbulence" },
-      "description": { "zh": "同时增强三维域扭曲和二维中心涡旋。", "en": "Strengthens both 3D domain warping and the central 2D vortex." },
+      "description": { "zh": "增强三维域扭曲和二维中心涡旋。", "en": "Strengthens 3D domain warping and the central 2D vortex." },
+      "group": { "zh": "形态", "en": "Shape" }
+    },
+    "uIrregularity": {
+      "type": "float", "default": 1.25, "min": 0.2, "max": 2.5, "step": 0.01,
+      "label": { "zh": "轮廓不规则度", "en": "Silhouette Irregularity" },
+      "description": { "zh": "控制方向噪声与大尺度凹凸对外轮廓的破坏程度。", "en": "Controls how strongly directional noise and large lobes break the outer silhouette." },
       "group": { "zh": "形态", "en": "Shape" }
     },
     "uExpansion": {
-      "type": "float", "default": 0.82, "min": 0.0, "max": 2.0, "step": 0.01,
+      "type": "float", "default": 0.88, "min": 0.0, "max": 2.0, "step": 0.01,
       "label": { "zh": "向外扩散", "en": "Expansion" },
       "description": { "zh": "控制径向传播速度和中心外推力。", "en": "Controls radial travelling speed and central outward force." },
       "group": { "zh": "形态", "en": "Shape" }
     },
     "uDetailCutoff": {
-      "type": "float", "default": 0.42, "min": 0.15, "max": 0.75, "step": 0.01,
+      "type": "float", "default": 0.50, "min": 0.20, "max": 0.78, "step": 0.01,
       "label": { "zh": "细节侵蚀", "en": "Detail Erosion" },
-      "description": { "zh": "提高后会得到更破碎、更不稳定的边缘。", "en": "Higher values produce more broken, unstable edges." },
+      "description": { "zh": "提高后会挖掉更多内部密度，形成更稀疏的破碎气体。", "en": "Higher values remove more internal density for a sparser, broken cloud." },
       "group": { "zh": "形态", "en": "Shape" }
     },
     "uFluidInfluence": {
       "type": "float", "default": 1.15, "min": 0.0, "max": 2.5, "step": 0.01,
       "label": { "zh": "流体影响", "en": "Fluid Influence" },
-      "description": { "zh": "二维速度/染料场对三维气体域扭曲与密度的影响。", "en": "How strongly the 2D velocity/dye field bends and thickens the 3D gas." },
+      "description": { "zh": "二维速度/染料场对三维气体域扭曲与局部密度的影响。", "en": "How strongly the 2D velocity/dye field bends and locally thickens the 3D gas." },
       "group": { "zh": "流体", "en": "Fluid" }
     },
     "uAdvection": {
@@ -365,13 +394,13 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
     "uAudioInfluence": {
       "type": "float", "default": 1.0, "min": 0.0, "max": 2.5, "step": 0.01,
       "label": { "zh": "音频联动", "en": "Audio Influence" },
-      "description": { "zh": "合成音频包络对气体呼吸、涡旋和波形的影响。", "en": "Influence of the synthetic audio envelope on breathing, vortices, and waveform." },
+      "description": { "zh": "合成音频包络对轮廓呼吸、涡旋和波形的影响。", "en": "Influence of the synthetic audio envelope on silhouette breathing, vortices, and waveform." },
       "group": { "zh": "音频", "en": "Audio" }
     },
     "uShadow": {
-      "type": "float", "default": 1.35, "min": 0.0, "max": 4.0, "step": 0.01,
-      "label": { "zh": "体积阴影", "en": "Volume Shadow" },
-      "description": { "zh": "近似自阴影的强度。", "en": "Strength of approximate self-shadowing." },
+      "type": "float", "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.01,
+      "label": { "zh": "局部阴影", "en": "Local Shadow" },
+      "description": { "zh": "控制低成本局部密度衰减阴影，不再额外进行多次密度采样。", "en": "Controls low-cost local-density shadowing without extra volume density probes." },
       "group": { "zh": "光照", "en": "Lighting" }
     },
     "uGasColor": {
