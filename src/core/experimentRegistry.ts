@@ -7,6 +7,14 @@ import basicVolumeFragment from '../experiments/volume/basic-volume/shader.frag?
 import chimneySmokeWGSL from '../experiments/volume/chimney-smoke/shader.wgsl?raw';
 import interactiveFluidGasWGSL from '../experiments/volume/interactive-fluid-gas/shader.wgsl?raw';
 
+// `active` is reserved by WGSL. Keep the source readable in the experiment file,
+// but sanitize the standalone identifier before metadata parsing and runtime compilation.
+// The word-boundary replacement deliberately leaves names such as `interactive` unchanged.
+const interactiveFluidGasRuntimeWGSL = interactiveFluidGasWGSL.replace(
+  /\bactive\b/g,
+  'burstActivity',
+);
+
 type ExperimentInput = Omit<ExperimentDefinition, 'metadata'>;
 
 function defineExperiment(definition: ExperimentInput): ExperimentDefinition {
@@ -103,7 +111,7 @@ export const experiments: ExperimentDefinition[] = [
     sourceFile: 'shader.wgsl',
     renderScale: 0.82,
     maxPixelRatio: 1.0,
-    wgsl: interactiveFluidGasWGSL,
+    wgsl: interactiveFluidGasRuntimeWGSL,
   }),
 ];
 
