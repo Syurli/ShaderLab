@@ -87,6 +87,16 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
   private lastElapsed = 0;
   private sourceIndex = 0;
 
+  private clickBurstPending = false;
+  private pendingClickTarget = { x: 0.5, y: 0.5 };
+  private burstStartedAt = -100;
+  private burstStrength = 0;
+  private burstSeed = 0.314159;
+  private burstTarget = { x: 0.78, y: 0.5 };
+  private lastAudio = 0;
+  private lastAudioBurstAt = -100;
+  private burstCounter = 0;
+
   private device?: GPUDevice;
   private context?: GPUCanvasContext;
   private computePipeline?: GPUComputePipeline;
@@ -102,6 +112,64 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
     this.experiment = options.experiment;
     this.values = { ...options.initialValues };
     this.parameterNames = Object.keys(options.experiment.metadata.parameters);
+  }
+
+  private numericValue(name: string, fallback: number) {
+    const value = this.values[name];
+    if (typeof value === 'number') return value;
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  private booleanValue(name: string, fallback: boolean) {
+    const value = this.values[name];
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value > 0.5;
+    if (typeof value === 'string') {
+      if (value === 'true' || value === '1') return true;
+      if (value === 'false' || value === '0') return false;
+    }
+    return fallback;
+  }
+
+  private nextSeed(elapsedSeconds: number) {
+    this.burstCounter += 1;
+    const x = Math.sin(
+      elapsedSeconds * 12.9898
+      + this.burstCounter * 78.233
+      + this.pointer.x * 37.719
+      + this.pointer.y * 19.913,
+    ) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  private normalizedTarget(x: number, y: number, seed: number) {
+    const dx = x - 0.5;
+    const dy = y - 0.5;
+    const len = Math.hypot(dx, dy);
+    if (len > 0.08) {
+      const scale = Math.min(0.42, len) / len;
+      return { x: 0.5 + dx * scale, y: 0.5 + dy * scale };
+    }
+    const angle = seed * Math.PI * 2;
+    return {
+      x: 0.5 + Math.cos(angle) * 0.34,
+      y: 0.5 + Math.sin(angle) * 0.34,
+    };
+  }
+
+  private triggerBurst(
+    elapsedSeconds: number,
+    strength: number,
+    targetX: number,
+    targetY: number,
+  ) {
+    const seed = this.nextSeed(elapsedSeconds);
+    this.burstStartedAt = elapsedSeconds;
+    this.burstStrength = Math.max(0, strength);
+    this.burstSeed = seed;
+    this.burstTarget = this.normalizedTarget(targetX, targetY, seed);
   }
 
   async initialize() {
@@ -180,9 +248,10 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
         const uy = (y + 0.5) / FLUID_SIZE - 0.5;
         const r2 = ux * ux + uy * uy;
         const offset = (y * FLUID_SIZE + x) * FLUID_CELL_FLOATS;
-        seed[offset] = -uy * Math.exp(-r2 * 32) * 0.18;
-        seed[offset + 1] = ux * Math.exp(-r2 * 32) * 0.18;
-        seed[offset + 2] = Math.exp(-r2 * 24) * 0.35;
+        seed[offset] = -uy * Math.exp(-r2 * 36) * 0.055;
+        seed[offset + 1] = ux * Math.exp(-r2 * 36) * 0.055;
+        seed[offset + 2] = Math.exp(-r2 * 26) * 0.16;
+        seed[offset + 3] = 0;
       }
     }
     this.device.queue.writeBuffer(this.fluidBuffers[0], 0, seed);
@@ -230,6 +299,10 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
   }
 
   setPointerState(state: PointerState) {
+    if (state.down && !this.pointer.down) {
+      this.clickBurstPending = true;
+      this.pendingClickTarget = { x: state.x, y: state.y };
+    }
     this.pointer = state;
   }
 
@@ -264,20 +337,66 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
 
     const dt = Math.min(1 / 30, Math.max(1 / 1000, elapsedSeconds - this.lastElapsed || 1 / 60));
     this.lastElapsed = elapsedSeconds;
-    const audio = 0.52
-      + Math.sin(elapsedSeconds * 2.17) * 0.18
-      + Math.sin(elapsedSeconds * 5.83 + 1.3) * 0.10
-      + Math.sin(elapsedSeconds * 11.2) * 0.05;
+
+    const audio = Math.max(0, Math.min(
+      1,
+      0.50
+        + Math.sin(elapsedSeconds * 2.17) * 0.20
+        + Math.sin(elapsedSeconds * 5.83 + 1.3) * 0.11
+        + Math.sin(elapsedSeconds * 11.2) * 0.06,
+    ));
+
+    if (this.clickBurstPending) {
+      this.clickBurstPending = false;
+      this.triggerBurst(
+        elapsedSeconds,
+        this.numericValue('uClickBurstStrength', 1.0),
+        this.pendingClickTarget.x,
+        this.pendingClickTarget.y,
+      );
+    }
+
+    const beatThreshold = this.numericValue('uBeatThreshold', 0.69);
+    const beatCooldown = Math.max(0.2, this.numericValue('uBeatCooldown', 0.72));
+    const crossedBeat = audio >= beatThreshold && this.lastAudio < beatThreshold;
+    if (
+      this.booleanValue('uAudioBurstEnabled', true)
+      && crossedBeat
+      && elapsedSeconds - this.lastAudioBurstAt >= beatCooldown
+      && elapsedSeconds - this.burstStartedAt >= 0.18
+    ) {
+      this.lastAudioBurstAt = elapsedSeconds;
+      const seed = this.nextSeed(elapsedSeconds + 0.123);
+      const angle = seed * Math.PI * 2;
+      this.triggerBurst(
+        elapsedSeconds,
+        this.numericValue('uAudioBurstStrength', 0.72),
+        0.5 + Math.cos(angle) * 0.36,
+        0.5 + Math.sin(angle) * 0.36,
+      );
+    }
+    this.lastAudio = audio;
+
+    const burstDuration = Math.max(0.12, this.numericValue('uBurstDuration', 0.78));
+    const burstAge = elapsedSeconds - this.burstStartedAt;
+    const burstT = burstAge >= 0 && burstAge < burstDuration
+      ? burstAge / burstDuration
+      : 1;
+    const burstEnvelope = burstT < 1
+      ? Math.pow(1 - burstT, 1.65) * Math.exp(-burstT * 0.55)
+      : 0;
+    const burstAmplitude = this.burstStrength * burstEnvelope;
+
     const frame = new Float32Array([
       elapsedSeconds, this.width, this.height, this.width / Math.max(this.height, 1),
-      this.pointer.x, this.pointer.y, this.pointer.down ? 1 : 0, Math.max(0, Math.min(1, audio)),
-      this.pointer.dx, this.pointer.dy, dt, this.pixelRatio,
+      this.pointer.x, this.pointer.y, burstAmplitude, audio,
+      this.burstTarget.x, this.burstTarget.y, dt, this.burstSeed,
     ]);
     this.device.queue.writeBuffer(this.frameBuffer, 0, frame);
 
-    const substeps = Math.max(1, Math.min(4, Math.round(Number(this.values.uSolverSubsteps ?? 1))));
+    const substeps = Math.max(1, Math.min(4, Math.round(this.numericValue('uSolverSubsteps', 2))));
     const encoder = this.device.createCommandEncoder({ label: 'fluid-volume frame' });
-    const computePass = encoder.beginComputePass({ label: '2D fluid advection' });
+    const computePass = encoder.beginComputePass({ label: '2D burst fluid advection' });
     computePass.setPipeline(this.computePipeline);
     computePass.setBindGroup(0, this.uniformBindGroup);
     for (let substep = 0; substep < substeps; substep += 1) {
@@ -302,8 +421,6 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
     renderPass.end();
     this.device.queue.submit([encoder.finish()]);
 
-    // Pointer movement is an obstacle velocity impulse. Consume dx/dy once while
-    // retaining the pressed state so a stationary obstacle continues blocking flow.
     this.pointer = { ...this.pointer, dx: 0, dy: 0 };
   }
 
@@ -312,12 +429,12 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
   }
 
   getSurfaceInfo(): BackendSurfaceInfo {
-    const substeps = Math.max(1, Math.min(4, Math.round(Number(this.values.uSolverSubsteps ?? 1))));
+    const substeps = Math.max(1, Math.min(4, Math.round(this.numericValue('uSolverSubsteps', 2))));
     return {
       width: this.width,
       height: this.height,
       drawCalls: 1 + substeps,
-      renderer: `Raw WebGPU / WGSL + ${FLUID_SIZE}² fluid ×${substeps}`,
+      renderer: `Raw WebGPU / WGSL + ${FLUID_SIZE}² burst-fluid ×${substeps}`,
     };
   }
 

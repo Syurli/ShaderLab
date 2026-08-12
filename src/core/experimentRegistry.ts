@@ -91,13 +91,13 @@ export const experiments: ExperimentDefinition[] = [
   }),
   defineExperiment({
     id: 'interactive-fluid-gas',
-    title: { zh: '交互式翻涌气体团', en: 'Interactive Rolling Gas Cloud' },
+    title: { zh: '爆裂分形气体核心', en: 'Burst Fractal Gas Core' },
     description: {
-      zh: 'Raw WebGPU + WGSL 的交互式稀疏体积气体团：可调轨道相机，96×96 半拉格朗日二维流场支持多子步、涡量保持和鼠标移动固体障碍物；障碍物通过无穿透边界、绕流偏转、尾涡脱落与体积挖空扰动气体，并提供取消显示刷新率同步的 GPU 吞吐基准模式。',
-      en: 'An interactive sparse Raw WebGPU + WGSL gas volume with an adjustable orbit camera, a 96×96 semi-Lagrangian flow field with solver substeps and vorticity retention, and a moving pointer-controlled solid obstacle using no-penetration, flow deflection, wake shedding and volume cutout. It also exposes an uncapped GPU-throughput benchmark mode.',
+      zh: 'Raw WebGPU + WGSL 的二维解算/三维体积混合实验：平静时保持细腻蠕动的完整烟雾球体；鼠标点击或合成音频节拍会触发一次随机分形爆裂，在 96×96 半拉格朗日流场中注入多尺度分叉速度、烟雾与爆裂记忆，再由 raymarch 抬升成短寿命的卷曲薄片、枝杈与烟丝，随后随流场耗散重新收拢。',
+      en: 'A Raw WebGPU + WGSL hybrid using a 2D solver with 3D volume rendering: the idle state is an intact finely rolling smoke sphere, while pointer clicks or synthetic audio beats trigger randomized fractal bursts. A 96×96 semi-Lagrangian field advects branching velocity, smoke and burst memory, which the ray marcher lifts into short-lived folded sheets, branches and filaments before the core reforms.',
     },
     category: { zh: '体积', en: 'Volume' },
-    tags: ['WebGPU', 'WGSL', 'Volume', 'Fluid', 'Interactive', 'Audio Reactive', 'Raymarch'],
+    tags: ['WebGPU', 'WGSL', 'Volume', '2D Fluid', 'Fractal', 'Burst', 'Audio Reactive', 'Raymarch'],
     backend: 'fluid-webgpu',
     languages: ['WGSL'],
     sourceFile: 'shader.wgsl',
