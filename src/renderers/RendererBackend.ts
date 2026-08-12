@@ -7,11 +7,21 @@ export interface BackendSurfaceInfo {
   renderer: string;
 }
 
+export interface PointerState {
+  x: number;
+  y: number;
+  down: boolean;
+  dx: number;
+  dy: number;
+}
+
 export interface RendererBackend {
   readonly id: string;
   initialize(): Promise<void>;
   resize(width: number, height: number, pixelRatio: number): void;
   setPointer(x: number, y: number): void;
+  /** Optional richer pointer input for interactive simulations. */
+  setPointerState?(state: PointerState): void;
   setParameters(values: ParameterValues): void;
   render(elapsedSeconds: number): void;
   getSurfaceInfo(): BackendSurfaceInfo;
