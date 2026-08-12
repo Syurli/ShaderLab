@@ -424,6 +424,13 @@ fn densityField(pInput: vec3f) -> f32 {
     params.uDetailCutoff.x + 0.28,
     detail * 0.82 + fine * 0.18,
   );
+  let idleDensity = coreEnvelope * coreTexture * 0.92;
+
+  // Branch tubes and folded sheets are the expensive part of the burst. In the normal
+  // intact-core state, return before evaluating any of them.
+  if (activity < 0.001) {
+    return max(0.0, idleDensity * params.uDensity.x);
+  }
 
   let seed = frame.pointerDelta.w;
   let reach = params.uBurstReach.x;
@@ -455,8 +462,7 @@ fn densityField(pInput: vec3f) -> f32 {
     0.0,
     0.90,
   );
-  let coreDensity = coreEnvelope
-    * coreTexture
+  let coreDensity = idleDensity
     * (1.0 - fracture * smoothstep(0.12, params.uCoreRadius.x + 0.12, radius));
 
   let burstTexture = 0.42 + 0.58 * smoothstep(
@@ -474,7 +480,7 @@ fn densityField(pInput: vec3f) -> f32 {
     * (1.0 - smoothstep(0.72, 1.04, radius))
     * (0.08 + detail * 0.18);
 
-  let density = coreDensity * 0.92
+  let density = coreDensity
     + explodedDensity
     + smokeTrail;
   return max(0.0, density * params.uDensity.x);
@@ -734,9 +740,9 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
       "group": { "zh": "二维解算", "en": "2D Solver" }
     },
     "uVelocityDissipation": {
-      "type": "float", "default": 0.34, "min": 0.0, "max": 3.0, "step": 0.01,
+      "type": "float", "default": 0.45, "min": 0.0, "max": 3.0, "step": 0.01,
       "label": { "zh": "速度耗散", "en": "Velocity Dissipation" },
-      "description": { "zh": "二维速度场衰减。", "en": "2D velocity decay." },
+      "description": { "zh": "二维速度场衰减；默认更快消除启动时残留的旋转速度。", "en": "2D velocity decay; the default removes residual startup rotation more quickly." },
       "group": { "zh": "二维解算", "en": "2D Solver" }
     },
     "uDyeDissipation": {
