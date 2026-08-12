@@ -1,7 +1,7 @@
 {
   "name": "shaderlab",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -19,6 +19,7 @@
     "@types/react-dom": "^18.3.1",
     "@types/three": "^0.170.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "@webgpu/types": "^0.1.71",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }

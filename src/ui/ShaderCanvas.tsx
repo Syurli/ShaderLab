@@ -1,10 +1,11 @@
-import { useEffect, useRef } from 'react';
-import * as THREE from 'three';
+import { useEffect, useRef, useState } from 'react';
 import type {
   ExperimentDefinition,
   ParameterValues,
   PerfSnapshot,
 } from '../core/types';
+import { createRendererBackend } from '../renderers/createRendererBackend';
+import type { RendererBackend } from '../renderers/RendererBackend';
 
 interface ShaderCanvasProps {
   experiment: ExperimentDefinition;
@@ -12,80 +13,43 @@ interface ShaderCanvasProps {
   onPerf: (snapshot: PerfSnapshot) => void;
 }
 
-function toUniformValue(value: number | boolean | string, type: string) {
-  if (type === 'color') return new THREE.Color(String(value));
-  return value;
-}
-
 export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const valuesRef = useRef(values);
+  const [error, setError] = useState<string | null>(null);
   valuesRef.current = values;
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: true,
-      powerPreference: 'high-performance',
-    });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setClearColor(0x07090c, 1);
+    let backend: RendererBackend | null = null;
+    let animationFrame = 0;
+    let disposed = false;
+    let pointerX = 0.5;
+    let pointerY = 0.5;
 
-    const scene = new THREE.Scene();
-    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    const geometry = new THREE.PlaneGeometry(2, 2);
-
-    const uniforms: Record<string, THREE.IUniform> = {
-      uTime: { value: 0 },
-      uResolution: { value: new THREE.Vector2(1, 1) },
-      uPointer: { value: new THREE.Vector2(0.5, 0.5) },
-    };
-
-    Object.entries(experiment.metadata.parameters).forEach(([name, config]) => {
-      uniforms[name] = {
-        value: toUniformValue(config.default, config.type),
-      };
-    });
-
-    const material = new THREE.ShaderMaterial({
-      vertexShader: experiment.vertexShader,
-      fragmentShader: experiment.fragmentShader,
-      uniforms,
-      depthWrite: false,
-      depthTest: false,
-    });
-
-    const mesh = new THREE.Mesh(geometry, material);
-    scene.add(mesh);
-
-    const size = { width: 1, height: 1 };
     const resize = () => {
+      if (!backend) return;
       const rect = canvas.getBoundingClientRect();
-      const width = Math.max(1, Math.floor(rect.width));
-      const height = Math.max(1, Math.floor(rect.height));
-      size.width = width;
-      size.height = height;
-      renderer.setSize(width, height, false);
-      uniforms.uResolution.value.set(width, height);
+      backend.resize(
+        Math.max(1, rect.width),
+        Math.max(1, rect.height),
+        window.devicePixelRatio,
+      );
     };
 
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
-    resize();
 
     const onPointerMove = (event: PointerEvent) => {
       const rect = canvas.getBoundingClientRect();
-      uniforms.uPointer.value.set(
-        (event.clientX - rect.left) / Math.max(rect.width, 1),
-        1 - (event.clientY - rect.top) / Math.max(rect.height, 1),
-      );
+      pointerX = (event.clientX - rect.left) / Math.max(rect.width, 1);
+      pointerY = 1 - (event.clientY - rect.top) / Math.max(rect.height, 1);
+      backend?.setPointer(pointerX, pointerY);
     };
     canvas.addEventListener('pointermove', onPointerMove);
 
-    let animationFrame = 0;
     const startTime = performance.now();
     let lastFrameTime = startTime;
     let perfWindowStart = startTime;
@@ -93,19 +57,10 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
     let perfAccumulated = 0;
 
     const render = (now: number) => {
+      if (!backend || disposed) return;
       const elapsed = (now - startTime) / 1000;
-      uniforms.uTime.value = elapsed;
-
-      Object.entries(experiment.metadata.parameters).forEach(([name, config]) => {
-        const next = valuesRef.current[name];
-        if (config.type === 'color') {
-          (uniforms[name].value as THREE.Color).set(String(next));
-        } else {
-          uniforms[name].value = next;
-        }
-      });
-
-      renderer.render(scene, camera);
+      backend.setParameters(valuesRef.current);
+      backend.render(elapsed);
 
       const frameMs = now - lastFrameTime;
       lastFrameTime = now;
@@ -113,12 +68,14 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
       perfFrames += 1;
 
       if (now - perfWindowStart >= 500) {
+        const surface = backend.getSurfaceInfo();
         onPerf({
           fps: (perfFrames * 1000) / (now - perfWindowStart),
           frameMs: perfAccumulated / Math.max(perfFrames, 1),
-          width: size.width,
-          height: size.height,
-          drawCalls: renderer.info.render.calls,
+          width: surface.width,
+          height: surface.height,
+          drawCalls: surface.drawCalls,
+          renderer: surface.renderer,
         });
         perfFrames = 0;
         perfAccumulated = 0;
@@ -128,17 +85,72 @@ export function ShaderCanvas({ experiment, values, onPerf }: ShaderCanvasProps) 
       animationFrame = requestAnimationFrame(render);
     };
 
-    animationFrame = requestAnimationFrame(render);
+    const boot = async () => {
+      try {
+        setError(null);
+        const nextBackend = createRendererBackend({
+          canvas,
+          experiment,
+          initialValues: valuesRef.current,
+        });
+        await nextBackend.initialize();
+        if (disposed) {
+          nextBackend.dispose();
+          return;
+        }
+        backend = nextBackend;
+        backend.setPointer(pointerX, pointerY);
+        resize();
+        animationFrame = requestAnimationFrame(render);
+      } catch (reason) {
+        if (!disposed) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      }
+    };
+
+    void boot();
 
     return () => {
+      disposed = true;
       cancelAnimationFrame(animationFrame);
       canvas.removeEventListener('pointermove', onPointerMove);
       observer.disconnect();
-      geometry.dispose();
-      material.dispose();
-      renderer.dispose();
+      backend?.dispose();
     };
   }, [experiment, onPerf]);
 
-  return <canvas ref={canvasRef} className="shader-canvas" />;
+  return (
+    <>
+      <canvas ref={canvasRef} className="shader-canvas" />
+      {error && (
+        <div
+          role="alert"
+          style={{
+            position: 'absolute',
+            inset: 24,
+            display: 'grid',
+            placeItems: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            style={{
+              maxWidth: 720,
+              padding: '18px 20px',
+              border: '1px solid var(--danger)',
+              borderRadius: 8,
+              background: 'rgba(12, 15, 19, .94)',
+              color: 'var(--text)',
+              font: '12px SFMono-Regular, Consolas, monospace',
+              lineHeight: 1.6,
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+            <strong style={{ color: 'var(--danger)' }}>Renderer backend failed</strong>\n{error}
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
