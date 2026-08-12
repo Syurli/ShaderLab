@@ -46,13 +46,13 @@ fn valueNoise(p: vec3f) -> f32 {
   return mix(y0, y1, u.z);
 }
 
-fn fbm(pInput: vec3f) -> f32 {
+fn fbmMain(pInput: vec3f) -> f32 {
   var p = pInput;
   var amplitude = 0.5;
   var total = 0.0;
   var normalization = 0.0;
 
-  for (var octave = 0; octave < 5; octave = octave + 1) {
+  for (var octave = 0; octave < 4; octave = octave + 1) {
     total = total + valueNoise(p) * amplitude;
     normalization = normalization + amplitude;
     p = p * 2.03 + vec3f(17.13, 9.71, 13.57);
@@ -62,24 +62,51 @@ fn fbm(pInput: vec3f) -> f32 {
   return total / normalization;
 }
 
-fn densityField(p: vec3f, time: f32) -> f32 {
-  let y01 = clamp((p.y + 1.05) / 3.15, 0.0, 1.0);
+fn fbmShadow(pInput: vec3f) -> f32 {
+  var p = pInput;
+  var amplitude = 0.64;
+  var total = 0.0;
+  var normalization = 0.0;
+
+  for (var octave = 0; octave < 2; octave = octave + 1) {
+    total = total + valueNoise(p) * amplitude;
+    normalization = normalization + amplitude;
+    p = p * 2.01 + vec3f(11.7, 5.3, 7.9);
+    amplitude = amplitude * 0.45;
+  }
+
+  return total / normalization;
+}
+
+fn plumeEnvelope(p: vec3f, time: f32) -> vec4f {
+  let y01 = clamp((p.y + 0.72) / 2.82, 0.0, 1.0);
   let turbulence = params.uTurbulence.x;
   let drift = vec2f(
     sin(p.y * 2.1 + time * 0.57),
     cos(p.y * 1.63 - time * 0.43),
-  ) * turbulence * (0.08 + 0.22 * y01);
+  ) * turbulence * (0.06 + 0.21 * y01);
 
   let centered = vec3f(p.x - drift.x, p.y, p.z - drift.y);
   let radius = mix(params.uBaseRadius.x, params.uTopRadius.x, y01);
   let radial = length(centered.xz);
-  let plume = 1.0 - smoothstep(radius * 0.52, radius, radial);
-  let bottomFade = smoothstep(-1.08, -0.78, p.y);
-  let topFade = 1.0 - smoothstep(1.55, 2.12, p.y);
-  let envelope = bottomFade * topFade;
+  let plume = 1.0 - smoothstep(radius * 0.5, radius, radial);
+  let bottomFade = smoothstep(-0.76, -0.52, p.y);
+  let topFade = 1.0 - smoothstep(1.62, 2.10, p.y);
+  let envelope = plume * bottomFade * topFade;
 
+  return vec4f(centered, envelope);
+}
+
+fn densityField(p: vec3f, time: f32) -> f32 {
+  let shaped = plumeEnvelope(p, time);
+  if (shaped.w <= 0.001) {
+    return 0.0;
+  }
+
+  let centered = shaped.xyz;
   let scale = params.uNoiseScale.x;
   let rise = params.uRiseSpeed.x;
+  let turbulence = params.uTurbulence.x;
   let advected = vec3f(
     centered.x * scale,
     centered.y * scale - time * rise,
@@ -88,20 +115,40 @@ fn densityField(p: vec3f, time: f32) -> f32 {
   let curlOffset = vec2f(
     sin(advected.y * 1.35 + time * 0.31),
     cos(advected.y * 1.11 - time * 0.27),
-  ) * turbulence * 0.45;
+  ) * turbulence * 0.38;
+
   let sampleP = vec3f(
     advected.x + curlOffset.x,
     advected.y,
     advected.z + curlOffset.y,
   );
 
-  let coarse = fbm(sampleP);
-  let detail = fbm(sampleP * 2.18 + vec3f(4.7, 1.9, 8.1));
-  let mixedNoise = coarse * 0.72 + detail * 0.28;
+  let coarse = fbmMain(sampleP);
+  let detail = valueNoise(sampleP * 2.35 + vec3f(4.7, 1.9, 8.1));
+  let mixedNoise = coarse * 0.84 + detail * 0.16;
   let threshold = clamp(params.uThreshold.x, 0.0, 0.95);
   let billow = smoothstep(threshold, 1.0, mixedNoise);
 
-  return max(0.0, plume * envelope * billow * params.uDensity.x);
+  return max(0.0, shaped.w * billow * params.uDensity.x);
+}
+
+fn densityFieldShadow(p: vec3f, time: f32) -> f32 {
+  let shaped = plumeEnvelope(p, time);
+  if (shaped.w <= 0.001) {
+    return 0.0;
+  }
+
+  let scale = params.uNoiseScale.x * 0.82;
+  let rise = params.uRiseSpeed.x;
+  let sampleP = vec3f(
+    shaped.x * scale,
+    shaped.y * scale - time * rise,
+    shaped.z * scale,
+  );
+  let coarse = fbmShadow(sampleP);
+  let threshold = clamp(params.uThreshold.x * 0.92, 0.0, 0.9);
+  let billow = smoothstep(threshold, 1.0, coarse);
+  return shaped.w * billow * params.uDensity.x;
 }
 
 fn intersectBox(ro: vec3f, rd: vec3f, bmin: vec3f, bmax: vec3f) -> vec2f {
@@ -127,16 +174,16 @@ fn smokeLight(p: vec3f, time: f32, viewDir: vec3f) -> vec3f {
   var opticalDepth = 0.0;
   var sampleP = p;
 
-  for (var i = 0; i < 6; i = i + 1) {
-    sampleP = sampleP + lightDir * 0.16;
-    opticalDepth = opticalDepth + densityField(sampleP, time) * 0.16;
+  for (var i = 0; i < 3; i = i + 1) {
+    sampleP = sampleP + lightDir * 0.27;
+    opticalDepth = opticalDepth + densityFieldShadow(sampleP, time) * 0.27;
   }
 
   let shadow = exp(-opticalDepth * params.uShadowStrength.x);
   let phase = phaseHG(dot(lightDir, -viewDir), params.uAnisotropy.x);
   let base = params.uSmokeColor.xyz;
-  let ambient = base * 0.20;
-  let direct = base * shadow * (0.28 + 0.72 * phase);
+  let ambient = base * 0.22;
+  let direct = base * shadow * (0.30 + 0.70 * phase);
   return ambient + direct;
 }
 
@@ -148,8 +195,8 @@ fn backgroundColor(ro: vec3f, rd: vec3f) -> vec3f {
     let groundT = (-1.32 - ro.y) / rd.y;
     if (groundT > 0.0) {
       let groundP = ro + rd * groundT;
-      let grid = 0.025 * (sin(groundP.x * 4.0) * sin(groundP.z * 4.0));
-      color = vec3f(0.045 + grid, 0.047 + grid, 0.05 + grid);
+      let distanceFade = exp(-0.06 * dot(groundP.xz, groundP.xz));
+      color = mix(vec3f(0.055, 0.058, 0.064), vec3f(0.075, 0.079, 0.086), vec3f(distanceFade));
     }
   }
 
@@ -178,21 +225,22 @@ fn fsMain(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
 
   let yaw = (pointer.x - 0.5) * 0.78;
   let pitch = (pointer.y - 0.5) * 0.34;
-  let cameraTarget = vec3f(0.0, 0.30, 0.0);
-  let ro = vec3f(sin(yaw) * 3.25, 0.28 + pitch * 1.8, cos(yaw) * 3.25);
+  let cameraTarget = vec3f(0.0, 0.35, 0.0);
+  let ro = vec3f(sin(yaw) * 3.25, 0.30 + pitch * 1.8, cos(yaw) * 3.25);
   let forward = normalize(cameraTarget - ro);
   let right = normalize(cross(forward, vec3f(0.0, 1.0, 0.0)));
   let up = normalize(cross(right, forward));
 
   var screen = fragCoord.xy / resolution * 2.0 - vec2f(1.0);
+  screen.y = -screen.y;
   screen.x = screen.x * aspect;
   let rd = normalize(forward + right * screen.x * 0.62 + up * screen.y * 0.62);
 
   let hit = intersectBox(
     ro,
     rd,
-    vec3f(-1.15, -1.10, -1.15),
-    vec3f(1.15, 2.15, 1.15),
+    vec3f(-1.12, -0.78, -1.12),
+    vec3f(1.12, 2.12, 1.12),
   );
 
   let background = backgroundColor(ro, rd);
@@ -200,31 +248,32 @@ fn fsMain(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
     return vec4f(background, 1.0);
   }
 
-  let steps = clamp(i32(round(params.uSteps.x)), 16, 192);
+  let steps = clamp(i32(round(params.uSteps.x)), 16, 128);
   let startT = max(hit.x, 0.0);
   let endT = hit.y;
   let stepSize = (endT - startT) / f32(steps);
   let jitterEnabled = step(0.5, params.uJitter.x);
-  let pixelHash = hash31(vec3f(floor(fragCoord.xy), floor(time * 24.0)));
+  let pixelHash = hash31(vec3f(floor(fragCoord.xy), floor(time * 20.0)));
   var t = startT + stepSize * mix(0.5, pixelHash, jitterEnabled);
 
   var transmittance = 1.0;
   var scattering = vec3f(0.0);
 
-  for (var i = 0; i < 192; i = i + 1) {
-    if (i >= steps || t >= endT || transmittance < 0.012) {
+  for (var i = 0; i < 128; i = i + 1) {
+    if (i >= steps || t >= endT || transmittance < 0.02) {
       break;
     }
 
     let p = ro + rd * t;
     let density = densityField(p, time);
-    if (density > 0.002) {
+    if (density > 0.003) {
       let extinction = density * params.uAbsorption.x;
       let alpha = 1.0 - exp(-extinction * stepSize);
       let lighting = smokeLight(p, time, rd);
       scattering = scattering + transmittance * alpha * lighting;
       transmittance = transmittance * (1.0 - alpha);
     }
+
     t = t + stepSize;
   }
 
@@ -260,12 +309,12 @@ fn fsMain(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
     },
     "uSteps": {
       "type": "int",
-      "default": 96,
+      "default": 64,
       "min": 24,
-      "max": 192,
+      "max": 128,
       "step": 1,
       "label": { "zh": "采样步数", "en": "Ray Steps" },
-      "description": { "zh": "主视线体积积分的最大采样数。", "en": "Maximum sample count for primary volume integration." },
+      "description": { "zh": "主视线体积积分的最大采样数。默认值针对实时预览优化。", "en": "Maximum sample count for primary volume integration. The default is tuned for realtime preview." },
       "group": { "zh": "质量", "en": "Quality" }
     },
     "uJitter": {
@@ -349,7 +398,7 @@ fn fsMain(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
       "max": 6.0,
       "step": 0.01,
       "label": { "zh": "自阴影强度", "en": "Self Shadow" },
-      "description": { "zh": "沿主光方向做短程密度积分得到的体积自阴影强度。", "en": "Strength of short-range density integration along the main light direction." },
+      "description": { "zh": "沿主光方向使用低成本密度采样得到的体积自阴影强度。", "en": "Strength of low-cost density sampling along the main light direction." },
       "group": { "zh": "光照", "en": "Lighting" }
     },
     "uAnisotropy": {
