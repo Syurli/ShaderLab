@@ -11,6 +11,8 @@ import type {
 
 const SLOT_FLOATS = 4;
 const SLOT_BYTES = SLOT_FLOATS * Float32Array.BYTES_PER_ELEMENT;
+const FRAME_FLOATS = 16;
+const FRAME_BYTES = FRAME_FLOATS * Float32Array.BYTES_PER_ELEMENT;
 const FLUID_SIZE = 96;
 const FLUID_CELL_FLOATS = 4;
 const FLUID_BUFFER_BYTES = FLUID_SIZE * FLUID_SIZE * FLUID_CELL_FLOATS * Float32Array.BYTES_PER_ELEMENT;
@@ -39,6 +41,11 @@ function parameterScalar(value: number | boolean | string, config: ShaderParamet
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function smoothstep01(edge0: number, edge1: number, x: number) {
+  const t = Math.max(0, Math.min(1, (x - edge0) / Math.max(edge1 - edge0, 1e-6)));
+  return t * t * (3 - 2 * t);
+}
+
 function buildInjectedWGSL(parameterNames: string[]) {
   const fields = parameterNames.length
     ? parameterNames.map((name) => {
@@ -56,6 +63,7 @@ struct ShaderLabFrame {
   timeResolution: vec4f,
   pointer: vec4f,
   pointerDelta: vec4f,
+  burstState: vec4f,
 };
 
 struct ShaderLabParams {
@@ -226,7 +234,7 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
 
     this.frameBuffer = this.device.createBuffer({
       label: 'fluid-volume frame uniforms',
-      size: 48,
+      size: FRAME_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.parameterBuffer = this.device.createBuffer({
@@ -241,21 +249,7 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     }));
 
-    // Start from a neutral field. Previous versions seeded a tangent velocity which could
-    // read as a global whirlpool before the actual simulation had time to settle.
     const seed = new Float32Array(FLUID_SIZE * FLUID_SIZE * FLUID_CELL_FLOATS);
-    for (let y = 0; y < FLUID_SIZE; y += 1) {
-      for (let x = 0; x < FLUID_SIZE; x += 1) {
-        const ux = (x + 0.5) / FLUID_SIZE - 0.5;
-        const uy = (y + 0.5) / FLUID_SIZE - 0.5;
-        const r2 = ux * ux + uy * uy;
-        const offset = (y * FLUID_SIZE + x) * FLUID_CELL_FLOATS;
-        seed[offset] = 0;
-        seed[offset + 1] = 0;
-        seed[offset + 2] = Math.exp(-r2 * 28) * 0.10;
-        seed[offset + 3] = 0;
-      }
-    }
     this.device.queue.writeBuffer(this.fluidBuffers[0], 0, seed);
     this.device.queue.writeBuffer(this.fluidBuffers[1], 0, seed);
 
@@ -360,44 +354,55 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
       );
     }
 
-    const beatThreshold = this.numericValue('uBeatThreshold', 0.69);
-    const beatCooldown = Math.max(0.2, this.numericValue('uBeatCooldown', 0.72));
+    const burstDuration = Math.max(0.45, this.numericValue('uBurstDuration', 1.55));
+    const beatThreshold = this.numericValue('uBeatThreshold', 0.71);
+    const beatCooldown = Math.max(0.3, this.numericValue('uBeatCooldown', 1.0));
     const crossedBeat = !audioPaused && audio >= beatThreshold && this.lastAudio < beatThreshold;
+    const burstAgeBeforeBeat = elapsedSeconds - this.burstStartedAt;
+    const previousBurstMostlyFinished = burstAgeBeforeBeat < 0 || burstAgeBeforeBeat >= burstDuration * 0.88;
     if (
       !audioPaused
       && this.booleanValue('uAudioBurstEnabled', true)
       && crossedBeat
+      && previousBurstMostlyFinished
       && elapsedSeconds - this.lastAudioBurstAt >= beatCooldown
-      && elapsedSeconds - this.burstStartedAt >= 0.18
     ) {
       this.lastAudioBurstAt = elapsedSeconds;
       const seed = this.nextSeed(elapsedSeconds + 0.123);
       const angle = seed * Math.PI * 2;
       this.triggerBurst(
         elapsedSeconds,
-        this.numericValue('uAudioBurstStrength', 0.72),
+        this.numericValue('uAudioBurstStrength', 0.78),
         0.5 + Math.cos(angle) * 0.36,
         0.5 + Math.sin(angle) * 0.36,
       );
     }
     this.lastAudio = audio;
 
-    const burstDuration = Math.max(0.12, this.numericValue('uBurstDuration', 0.78));
     const burstAge = elapsedSeconds - this.burstStartedAt;
-    const burstT = burstAge >= 0 && burstAge < burstDuration
-      ? burstAge / burstDuration
+    const burstActive = burstAge >= 0 && burstAge < burstDuration && this.burstStrength > 0.0001;
+    const phase = burstActive ? Math.max(0, Math.min(1, burstAge / burstDuration)) : 1;
+    const elasticity = Math.max(0, Math.min(2, this.numericValue('uElasticity', 1.0)));
+    const baseSpread = burstActive ? Math.pow(Math.max(0, Math.sin(Math.PI * phase)), 0.72) : 0;
+    const returnPhase = Math.max(0, phase - 0.56);
+    const rebound = burstActive
+      ? 1 + Math.sin(returnPhase * Math.PI * 6.0) * Math.exp(-returnPhase * 5.0) * 0.12 * elasticity
       : 1;
-    // Keep the core collapsed through most of the event, then let it reform quickly near
-    // the end. This avoids a persistent spherical center behind the exploded structures.
-    const burstEnvelope = burstT < 1
-      ? Math.pow(1 - burstT, 0.72) * Math.exp(-burstT * 0.34)
+    const spread = Math.max(0, baseSpread * rebound);
+    const collapseIn = smoothstep01(0.035, 0.16, phase);
+    const collapseOut = 1 - smoothstep01(0.69, 0.98, phase);
+    const collapse = burstActive ? collapseIn * collapseOut : 0;
+    const injectionEnvelope = burstActive
+      ? Math.exp(-phase * 7.5) * (1 - smoothstep01(0.22, 0.42, phase))
       : 0;
-    const burstAmplitude = this.burstStrength * burstEnvelope;
+    const burstAmplitude = this.burstStrength * injectionEnvelope;
+    const eventStrength = burstActive ? this.burstStrength : 0;
 
     const frame = new Float32Array([
       elapsedSeconds, this.width, this.height, this.width / Math.max(this.height, 1),
       this.pointer.x, this.pointer.y, burstAmplitude, audio,
       this.burstTarget.x, this.burstTarget.y, dt, this.burstSeed,
+      phase, spread, collapse, eventStrength,
     ]);
     this.device.queue.writeBuffer(this.frameBuffer, 0, frame);
 
