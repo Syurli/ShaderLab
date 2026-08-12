@@ -241,6 +241,8 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     }));
 
+    // Start from a neutral field. Previous versions seeded a tangent velocity which could
+    // read as a global whirlpool before the actual simulation had time to settle.
     const seed = new Float32Array(FLUID_SIZE * FLUID_SIZE * FLUID_CELL_FLOATS);
     for (let y = 0; y < FLUID_SIZE; y += 1) {
       for (let x = 0; x < FLUID_SIZE; x += 1) {
@@ -248,9 +250,9 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
         const uy = (y + 0.5) / FLUID_SIZE - 0.5;
         const r2 = ux * ux + uy * uy;
         const offset = (y * FLUID_SIZE + x) * FLUID_CELL_FLOATS;
-        seed[offset] = -uy * Math.exp(-r2 * 36) * 0.055;
-        seed[offset + 1] = ux * Math.exp(-r2 * 36) * 0.055;
-        seed[offset + 2] = Math.exp(-r2 * 26) * 0.16;
+        seed[offset] = 0;
+        seed[offset + 1] = 0;
+        seed[offset + 2] = Math.exp(-r2 * 28) * 0.10;
         seed[offset + 3] = 0;
       }
     }
@@ -338,13 +340,15 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
     const dt = Math.min(1 / 30, Math.max(1 / 1000, elapsedSeconds - this.lastElapsed || 1 / 60));
     this.lastElapsed = elapsedSeconds;
 
-    const audio = Math.max(0, Math.min(
+    const audioPaused = this.booleanValue('uAudioPaused', false);
+    const rawAudio = Math.max(0, Math.min(
       1,
       0.50
         + Math.sin(elapsedSeconds * 2.17) * 0.20
         + Math.sin(elapsedSeconds * 5.83 + 1.3) * 0.11
         + Math.sin(elapsedSeconds * 11.2) * 0.06,
     ));
+    const audio = audioPaused ? 0 : rawAudio;
 
     if (this.clickBurstPending) {
       this.clickBurstPending = false;
@@ -358,9 +362,10 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
 
     const beatThreshold = this.numericValue('uBeatThreshold', 0.69);
     const beatCooldown = Math.max(0.2, this.numericValue('uBeatCooldown', 0.72));
-    const crossedBeat = audio >= beatThreshold && this.lastAudio < beatThreshold;
+    const crossedBeat = !audioPaused && audio >= beatThreshold && this.lastAudio < beatThreshold;
     if (
-      this.booleanValue('uAudioBurstEnabled', true)
+      !audioPaused
+      && this.booleanValue('uAudioBurstEnabled', true)
       && crossedBeat
       && elapsedSeconds - this.lastAudioBurstAt >= beatCooldown
       && elapsedSeconds - this.burstStartedAt >= 0.18
@@ -382,8 +387,10 @@ export class FluidVolumeWebGPUBackend implements RendererBackend {
     const burstT = burstAge >= 0 && burstAge < burstDuration
       ? burstAge / burstDuration
       : 1;
+    // Keep the core collapsed through most of the event, then let it reform quickly near
+    // the end. This avoids a persistent spherical center behind the exploded structures.
     const burstEnvelope = burstT < 1
-      ? Math.pow(1 - burstT, 1.65) * Math.exp(-burstT * 0.55)
+      ? Math.pow(1 - burstT, 0.72) * Math.exp(-burstT * 0.34)
       : 0;
     const burstAmplitude = this.burstStrength * burstEnvelope;
 
