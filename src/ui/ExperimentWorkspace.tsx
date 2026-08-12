@@ -105,7 +105,12 @@ export function ExperimentWorkspace({ experiment }: { experiment: ExperimentDefi
 
         <div className="viewer-shell" ref={viewerRef}>
           {tab === 'view' && (
-            <ShaderCanvas experiment={experiment} values={values} onPerf={onPerf} />
+            <ShaderCanvas
+              key={experiment.id}
+              experiment={experiment}
+              values={values}
+              onPerf={onPerf}
+            />
           )}
 
           {tab === 'code' && (
