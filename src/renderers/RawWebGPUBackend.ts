@@ -160,7 +160,10 @@ export class RawWebGPUBackend implements RendererBackend {
   }
 
   resize(width: number, height: number, pixelRatio: number) {
-    this.pixelRatio = Math.min(pixelRatio, 2);
+    const maxPixelRatio = Math.max(0.5, this.experiment.maxPixelRatio ?? 2);
+    const renderScale = Math.min(1, Math.max(0.25, this.experiment.renderScale ?? 1));
+    this.pixelRatio = Math.min(pixelRatio, maxPixelRatio) * renderScale;
+
     const physicalWidth = Math.max(1, Math.floor(width * this.pixelRatio));
     const physicalHeight = Math.max(1, Math.floor(height * this.pixelRatio));
     if (this.canvas.width !== physicalWidth) this.canvas.width = physicalWidth;
