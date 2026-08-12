@@ -41,8 +41,10 @@ export interface ExperimentDefinition {
   tags: string[];
   backend: Backend;
   languages: ShaderLanguage[];
-  vertexShader: string;
-  fragmentShader: string;
+  sourceFile: string;
+  vertexShader?: string;
+  fragmentShader?: string;
+  wgsl?: string;
   metadata: ShaderLabMetadata;
 }
 
@@ -52,4 +54,5 @@ export interface PerfSnapshot {
   width: number;
   height: number;
   drawCalls: number;
+  renderer: string;
 }

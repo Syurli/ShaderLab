@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { localize, t } from '../app/i18n';
 import { useAppStore } from '../app/store';
 import { experiments } from '../core/experimentRegistry';
@@ -19,6 +19,7 @@ const EMPTY_PERF: PerfSnapshot = {
   width: 0,
   height: 0,
   drawCalls: 0,
+  renderer: '—',
 };
 
 export function ExperimentWorkspace({ experiment }: { experiment: ExperimentDefinition }) {
@@ -35,6 +36,12 @@ export function ExperimentWorkspace({ experiment }: { experiment: ExperimentDefi
     [experiment],
   );
 
+  useEffect(() => {
+    setValues(defaults);
+    setPerf(EMPTY_PERF);
+    setTab('view');
+  }, [defaults, experiment.id]);
+
   const onChange = (name: string, value: number | boolean | string) => {
     setValues((current) => ({ ...current, [name]: value }));
   };
@@ -45,6 +52,8 @@ export function ExperimentWorkspace({ experiment }: { experiment: ExperimentDefi
   const requestFullscreen = () => {
     viewerRef.current?.requestFullscreen?.();
   };
+
+  const source = experiment.wgsl ?? experiment.fragmentShader ?? '';
 
   return (
     <main className="workspace">
@@ -96,17 +105,22 @@ export function ExperimentWorkspace({ experiment }: { experiment: ExperimentDefi
 
         <div className="viewer-shell" ref={viewerRef}>
           {tab === 'view' && (
-            <ShaderCanvas experiment={experiment} values={values} onPerf={onPerf} />
+            <ShaderCanvas
+              key={experiment.id}
+              experiment={experiment}
+              values={values}
+              onPerf={onPerf}
+            />
           )}
 
           {tab === 'code' && (
             <div className="code-view">
               <div className="code-toolbar">
                 <span>{t(locale, 'source')}</span>
-                <code>{experiment.id}/shader.frag</code>
+                <code>{experiment.id}/{experiment.sourceFile}</code>
               </div>
               <pre>
-                <code>{experiment.fragmentShader}</code>
+                <code>{source}</code>
               </pre>
             </div>
           )}
@@ -146,7 +160,7 @@ export function ExperimentWorkspace({ experiment }: { experiment: ExperimentDefi
                 value={`${perf.width} × ${perf.height}`}
               />
               <Metric label={t(locale, 'drawCalls')} value={String(perf.drawCalls)} />
-              <Metric label={t(locale, 'currentRenderer')} value="Three.js / WebGL2" />
+              <Metric label={t(locale, 'currentRenderer')} value={perf.renderer} />
             </div>
           )}
         </div>
@@ -154,7 +168,7 @@ export function ExperimentWorkspace({ experiment }: { experiment: ExperimentDefi
         <div className="statusbar">
           <span><b>{perf.fps.toFixed(0)}</b> FPS</span>
           <span><b>{perf.frameMs.toFixed(2)}</b> ms</span>
-          <span>{experiment.backend.toUpperCase()}</span>
+          <span>{perf.renderer}</span>
           <span>{experiment.languages.join(' / ')}</span>
           <span>{perf.width} × {perf.height}</span>
         </div>
