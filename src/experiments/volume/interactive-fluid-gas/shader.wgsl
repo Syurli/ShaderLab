@@ -14,6 +14,12 @@ struct VolumeSample {
   activity: f32,
 };
 
+struct RadialStructure {
+  trunk: f32,
+  sheet: f32,
+  filament: f32,
+};
+
 @vertex
 fn vsMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOut {
   var positions = array<vec2f, 3>(
@@ -32,6 +38,16 @@ fn rotate2(v: vec2f, a: f32) -> vec2f {
   let c = cos(a);
   let s = sin(a);
   return vec2f(c * v.x + s * v.y, -s * v.x + c * v.y);
+}
+
+fn hash11(x: f32) -> f32 {
+  return fract(sin(x * 127.1 + 311.7) * 43758.5453123);
+}
+
+fn hash31(p: vec3f) -> f32 {
+  var q = fract(p * 0.1031);
+  q += dot(q, q.yzx + vec3f(33.33));
+  return fract((q.x + q.y) * q.z);
 }
 
 fn fluidIndex(x: i32, y: i32) -> u32 {
@@ -55,58 +71,67 @@ fn sampleFluid(uvInput: vec2f) -> vec4f {
   return mix(a, b, f.y);
 }
 
-fn hash31(p: vec3f) -> f32 {
-  var q = fract(p * 0.1031);
-  q += dot(q, q.yzx + vec3f(33.33));
-  return fract((q.x + q.y) * q.z);
-}
+fn radialImpulseField(
+  p: vec2f,
+  seed: f32,
+  branchCountInput: f32,
+  sharpness: f32,
+  targetDirection: vec2f,
+) -> vec3f {
+  let branchCount = clamp(branchCountInput, 3.0, 8.0);
+  let baseWidth = mix(0.062, 0.024, clamp(sharpness / 7.0, 0.0, 1.0));
+  var weightedDirection = vec2f(0.0);
+  var totalWeight = 0.0;
+  var strongest = 0.0;
 
-fn branchBand2(p: vec2f, dir: vec2f, phase: f32, width: f32) -> f32 {
-  let sideAxis = vec2f(-dir.y, dir.x);
-  let along = dot(p, dir);
-  let side = dot(p, sideAxis)
-    + sin(along * 13.0 + phase) * 0.030
-    + sin(along * 29.0 - phase * 1.23) * 0.012
-    + sin(along * 53.0 + phase * 0.47) * 0.005;
-  let ridge = exp(-abs(side) / max(width, 0.004));
-  let window = smoothstep(-0.035, 0.035, along)
-    * (1.0 - smoothstep(0.30, 0.60, along));
-  return ridge * window;
-}
+  for (var i = 0; i < 8; i += 1) {
+    let fi = f32(i);
+    if (fi >= branchCount) {
+      continue;
+    }
 
-fn impulsePattern2(p: vec2f, seed: f32, complexity: f32, sharpness: f32) -> f32 {
-  let a = seed * 6.28318530718;
-  let d0 = vec2f(cos(a), sin(a));
-  let d1 = vec2f(cos(a + 1.83), sin(a + 1.83));
-  let d2 = vec2f(cos(a - 2.31), sin(a - 2.31));
-  let d3 = vec2f(cos(a + 3.77), sin(a + 3.77));
-  let width = mix(0.052, 0.017, clamp(sharpness / 7.0, 0.0, 1.0));
-  let trunks = max(
-    branchBand2(p, d0, seed * 7.9, width),
-    max(
-      branchBand2(p, d1, seed * 11.3 + 1.2, width * 0.84) * 0.92,
-      max(
-        branchBand2(p, d2, seed * 16.7 - 2.1, width * 0.72) * 0.82,
-        branchBand2(p, d3, seed * 20.1 + 0.6, width * 0.62) * 0.70,
-      ),
-    ),
-  );
+    let branchSeed = seed * 41.73 + fi * 17.17;
+    let angularJitter = (hash11(branchSeed) - 0.5) * 0.52;
+    let angle = seed * 6.28318530718
+      + fi * 6.28318530718 / branchCount
+      + angularJitter;
+    var direction = vec2f(cos(angle), sin(angle));
+    if (i == 0) {
+      direction = normalize(direction * 0.72 + targetDirection * 0.28 + vec2f(0.0001));
+    }
 
-  var q = p * (8.5 + complexity * 0.72);
-  var ridge = 0.0;
-  var amplitude = 0.55;
-  var frequency = 1.0;
-  for (var i = 0; i < 3; i += 1) {
-    let wave = abs(
-      sin(q.y * frequency + seed * 4.7)
-        + cos(q.x * frequency - seed * 3.2)
-    ) * 0.5;
-    ridge += pow(max(0.0, 1.0 - wave), 1.35 + sharpness * 0.18) * amplitude;
-    q = rotate2(q, 0.61 + seed * 0.13 + f32(i) * 0.19);
-    frequency *= 1.79;
-    amplitude *= 0.48;
+    let sideAxis = vec2f(-direction.y, direction.x);
+    let along = dot(p, direction);
+    let curve = (
+      sin(along * (7.0 + hash11(branchSeed + 2.0) * 3.0) + branchSeed) * 0.020
+        + sin(along * 18.0 - branchSeed * 0.43) * 0.007
+    ) * smoothstep(0.025, 0.34, along);
+    let side = dot(p, sideAxis) + curve;
+    let taper = mix(1.0, 0.56, smoothstep(0.11, 0.52, along));
+    let width = baseWidth * taper;
+    let window = smoothstep(-0.025, 0.030, along)
+      * (1.0 - smoothstep(0.36, 0.59, along));
+    let trunk = exp(-abs(side) / max(width, 0.004)) * window;
+
+    let splitOffset = 0.028 + hash11(branchSeed + 7.0) * 0.026;
+    let splitWindow = smoothstep(0.13, 0.23, along)
+      * (1.0 - smoothstep(0.33, 0.55, along));
+    let splitA = exp(-abs(side - splitOffset) / max(width * 0.52, 0.003));
+    let splitB = exp(-abs(side + splitOffset * 0.82) / max(width * 0.48, 0.003));
+    let splits = max(splitA, splitB) * splitWindow * 0.56;
+    let weight = max(trunk, splits);
+
+    let localDirection = normalize(
+      direction - sideAxis * cos(along * 8.0 + branchSeed) * 0.12 + vec2f(0.0001),
+    );
+    weightedDirection += localDirection * weight;
+    totalWeight += weight;
+    strongest = max(strongest, weight);
   }
-  return clamp(max(trunks, ridge * 0.48), 0.0, 1.25);
+
+  let mask = clamp(max(strongest, totalWeight * 0.34), 0.0, 1.25);
+  let pushDirection = normalize(weightedDirection + vec2f(0.0001));
+  return vec3f(pushDirection * mask, mask);
 }
 
 @compute @workgroup_size(8, 8)
@@ -138,15 +163,31 @@ fn csFluid(@builtin(global_invocation_id) gid: vec3u) {
   velocity = mix(
     velocity,
     (leftState.xy + rightState.xy + downState.xy + upState.xy) * 0.25,
-    clamp(params.uViscosity.x * dt * 5.5, 0.0, 0.20),
+    clamp(params.uViscosity.x * dt * 5.0, 0.0, 0.18),
   );
 
+  let centerDelta = uv - vec2f(0.5);
+  let centerRadius = max(length(centerDelta), 0.001);
+  let radial = centerDelta / centerRadius;
+  let tangent = vec2f(-radial.y, radial.x);
+  let centerFalloff = exp(-centerRadius * 6.2);
+  let time = frame.timeResolution.x;
+  let audio = frame.pointer.w;
+  let burstPhase = frame.burstState.x;
+  let burstStrength = clamp(frame.burstState.w, 0.0, 2.0);
+  let burstMix = clamp(burstStrength, 0.0, 1.0);
+
   let curl = (rightState.y - leftState.y) - (upState.x - downState.x);
+  let curlDelay = clamp(params.uCurlDelay.x, 0.04, 0.82);
+  let curlRamp = smoothstep(curlDelay, min(curlDelay + 0.34, 0.96), burstPhase);
+  let burstCurlScale = 0.10 + curlRamp * 0.90;
+  let curlScale = mix(1.0, burstCurlScale, burstMix);
   velocity += vec2f(-velocity.y, velocity.x)
     * curl
     * params.uVorticity.x
     * dt
-    * 2.7;
+    * 2.45
+    * curlScale;
 
   let displacementLaplacian = leftState.zw
     + rightState.zw
@@ -154,14 +195,7 @@ fn csFluid(@builtin(global_invocation_id) gid: vec3u) {
     + upState.zw
     - displacement * 4.0;
   displacement -= displacementLaplacian
-    * clamp(params.uFlowSharpen.x * dt, 0.0, 0.055);
-
-  let centerDelta = uv - vec2f(0.5);
-  let centerRadius = max(length(centerDelta), 0.001);
-  let radial = centerDelta / centerRadius;
-  let centerFalloff = exp(-centerRadius * 6.0);
-  let time = frame.timeResolution.x;
-  let audio = frame.pointer.w;
+    * clamp(params.uFlowSharpen.x * dt, 0.0, 0.050);
 
   let idleCurl = vec2f(
     sin(uv.y * 12.7 + time * 0.83) + sin((uv.x + uv.y) * 18.3 - time * 0.47) * 0.37,
@@ -171,62 +205,76 @@ fn csFluid(@builtin(global_invocation_id) gid: vec3u) {
     * centerFalloff
     * params.uCoreWobble.x
     * dt
-    * (0.055 + audio * params.uAudioInfluence.x * 0.008);
+    * (0.052 + audio * params.uAudioInfluence.x * 0.008);
 
   let injection = frame.pointer.z;
   if (injection > 0.0005) {
     let seed = frame.pointerDelta.w;
-    let pattern = impulsePattern2(
-      centerDelta,
-      seed,
-      clamp(params.uFractalBranches.x, 3.0, 10.0),
-      clamp(params.uBranchSharpness.x, 1.0, 7.0),
-    );
     let targetVector = frame.pointerDelta.xy - vec2f(0.5);
     let targetDirection = targetVector / max(length(targetVector), 0.001);
-    let directionBias = 0.32
-      + 0.68 * smoothstep(-0.78, 0.92, dot(radial, targetDirection));
-    let reach = max(params.uBurstReach.x, 0.25);
-    let radialEnvelope = exp(-pow(centerRadius / reach, 2.0) * 3.2);
-    let source = injection * radialEnvelope * directionBias * pattern;
-
-    let shear = vec2f(-targetDirection.y, targetDirection.x)
-      * sin(dot(centerDelta, vec2f(-targetDirection.y, targetDirection.x)) * 37.0 + seed * 19.0);
+    let radialField = radialImpulseField(
+      centerDelta,
+      seed,
+      clamp(params.uFractalBranches.x, 3.0, 8.0),
+      clamp(params.uBranchSharpness.x, 1.0, 7.0),
+      targetDirection,
+    );
+    let reach = max(params.uBurstReach.x, 0.20);
+    let radialEnvelope = 1.0 - smoothstep(reach * 0.72, reach, centerRadius);
+    let source = injection * radialEnvelope * radialField.z;
+    let trunkDirection = normalize(radialField.xy + vec2f(0.0001));
+    let radialBias = clamp(params.uRadialBias.x, 0.2, 2.5);
     let pushDirection = normalize(
-      radial * 0.56
-        + targetDirection * 0.34
-        + shear * 0.24
+      trunkDirection * (0.72 + radialBias * 0.22)
+        + radial * radialBias * 0.34
+        + targetDirection * 0.10
         + vec2f(0.0001),
     );
     let impulse = pushDirection
       * source
       * params.uBurstForce.x
       * dt
-      * 16.0;
+      * 16.8;
     velocity += impulse;
-    displacement += impulse * dt * params.uMaterialResponse.x * 0.55;
+    displacement += impulse * dt * params.uMaterialResponse.x * 0.60;
   }
 
-  let burstPhase = frame.burstState.x;
-  let burstStrength = clamp(frame.burstState.w, 0.0, 2.0);
-  let springRamp = mix(
-    1.0,
-    mix(0.34, 1.08, smoothstep(0.16, 0.78, burstPhase)),
-    clamp(burstStrength, 0.0, 1.0),
-  );
-  velocity -= displacement
+  if (burstStrength > 0.0005) {
+    let earlyRadial = (1.0 - smoothstep(0.10, curlDelay, burstPhase)) * burstMix;
+    let radialVelocity = radial * dot(velocity, radial);
+    let tangentialVelocity = velocity - radialVelocity;
+    velocity = radialVelocity + tangentialVelocity * (1.0 - earlyRadial * 0.74);
+
+    let curlDrive = smoothstep(curlDelay * 0.82, min(curlDelay + 0.34, 0.95), burstPhase)
+      * length(displacement)
+      * centerFalloff;
+    velocity += tangent
+      * sin(centerRadius * 31.0 + frame.pointerDelta.w * 19.0 + time * 1.7)
+      * curlDrive
+      * params.uVorticity.x
+      * dt
+      * 1.75;
+  }
+
+  let displacementRadial = radial * dot(displacement, radial);
+  let displacementTangential = displacement - displacementRadial;
+  let returnRamp = smoothstep(0.24, 0.86, burstPhase);
+  let radialSpring = mix(1.0, mix(0.26, 1.16, returnRamp), burstMix);
+  let tangentialSpring = mix(1.0, mix(0.58, 1.02, returnRamp), burstMix);
+  let springDisplacement = displacementRadial * radialSpring
+    + displacementTangential * tangentialSpring;
+  velocity -= springDisplacement
     * params.uElasticity.x
-    * springRamp
     * dt
-    * 8.2;
+    * 8.0;
   velocity *= exp(-params.uElasticDamping.x * dt);
   velocity *= exp(-params.uVelocityDissipation.x * dt);
 
   displacement += velocity * dt * params.uMaterialResponse.x;
 
   let speed = length(velocity);
-  if (speed > 3.4) {
-    velocity *= 3.4 / speed;
+  if (speed > 3.6) {
+    velocity *= 3.6 / speed;
   }
   let maxDisplacement = max(params.uMaxDisplacement.x, 0.05);
   let displacementLength = length(displacement);
@@ -332,13 +380,83 @@ fn sampleFlowWorld(p: vec3f) -> Flow3D {
   return result;
 }
 
+fn branchDirection3(index: i32, seed: f32) -> vec3f {
+  let fi = f32(index);
+  let h0 = hash11(seed * 51.7 + fi * 23.1 + 4.0);
+  let h1 = hash11(seed * 79.3 + fi * 31.9 + 9.0);
+  let z = mix(-0.72, 0.72, h0);
+  let angle = h1 * 6.28318530718;
+  let planar = sqrt(max(1.0 - z * z, 0.001));
+  return normalize(vec3f(cos(angle) * planar, sin(angle) * planar, z));
+}
+
+fn radialStructure3(
+  p: vec3f,
+  seed: f32,
+  branchCountInput: f32,
+  sharpness: f32,
+) -> RadialStructure {
+  var result: RadialStructure;
+  result.trunk = 0.0;
+  result.sheet = 0.0;
+  result.filament = 0.0;
+
+  let branchCount = clamp(branchCountInput, 3.0, 8.0);
+  let baseWidth = mix(0.105, 0.048, clamp(sharpness / 7.0, 0.0, 1.0));
+
+  for (var i = 0; i < 8; i += 1) {
+    if (f32(i) >= branchCount) {
+      continue;
+    }
+
+    let direction = branchDirection3(i, seed);
+    var referenceAxis = vec3f(0.0, 1.0, 0.0);
+    if (abs(direction.y) > 0.82) {
+      referenceAxis = vec3f(1.0, 0.0, 0.0);
+    }
+    let sideA = normalize(cross(direction, referenceAxis));
+    let sideB = normalize(cross(direction, sideA));
+    let along = dot(p, direction);
+    let branchSeed = seed * 37.1 + f32(i) * 13.7;
+    let bendA = sin(along * 6.5 + branchSeed) * 0.038 * smoothstep(0.06, 0.52, along);
+    let bendB = sin(along * 10.7 - branchSeed * 0.47) * 0.022 * smoothstep(0.08, 0.58, along);
+    let local = p
+      - direction * along
+      - sideA * bendA
+      - sideB * bendB;
+    let localA = dot(local, sideA);
+    let localB = dot(local, sideB);
+    let distanceToAxis = length(vec2f(localA, localB));
+    let taper = mix(1.0, 0.48, smoothstep(0.18, 0.85, along));
+    let width = baseWidth * taper;
+    let window = smoothstep(-0.035, 0.045, along)
+      * (1.0 - smoothstep(0.56, 1.02, along));
+
+    let trunk = exp(-distanceToAxis * distanceToAxis / max(width * width, 0.00001)) * window;
+    let sheet = exp(-abs(localA) / max(width * 0.20, 0.004))
+      * exp(-abs(localB) / max(width * 1.75, 0.008))
+      * window;
+    let filamentPulse = 0.58
+      + 0.42 * max(0.0, sin(along * 31.0 + branchSeed * 2.1));
+    let filament = exp(-distanceToAxis / max(width * 0.27, 0.004))
+      * window
+      * filamentPulse;
+
+    result.trunk = max(result.trunk, trunk);
+    result.sheet = max(result.sheet, sheet);
+    result.filament = max(result.filament, filament);
+  }
+
+  return result;
+}
+
 fn densityField(pWorld: vec3f) -> VolumeSample {
   var out: VolumeSample;
   out.density = 0.0;
   out.detail = 0.0;
   out.activity = 0.0;
 
-  if (length(pWorld) > 1.28) {
+  if (length(pWorld) > 1.30) {
     return out;
   }
 
@@ -348,6 +466,16 @@ fn densityField(pWorld: vec3f) -> VolumeSample {
   let deformation = params.uFluidInfluence.x;
   let materialPosition = pWorld - flow.displacement * deformation;
   let displacementAmount = length(flow.displacement) * deformation;
+  let worldRadius = max(length(pWorld), 0.001);
+  let worldRadial = pWorld / worldRadius;
+  let radialDisplacement = max(dot(flow.displacement * deformation, worldRadial), 0.0);
+
+  var expansionGradient = 0.0;
+  if (displacementAmount > params.uTearThreshold.x * 0.42) {
+    let outwardFlow = sampleFlowWorld(pWorld + worldRadial * 0.036);
+    let outwardRadial = dot(outwardFlow.displacement * deformation, worldRadial);
+    expansionGradient = max((outwardRadial - radialDisplacement) / 0.036, 0.0);
+  }
 
   let crawled = crawlWarp(
     materialPosition,
@@ -392,54 +520,93 @@ fn densityField(pWorld: vec3f) -> VolumeSample {
     detail * 0.72 + fine * 0.28,
   );
 
+  let strainMeasure = max(displacementAmount, radialDisplacement * 1.55);
   let strain = smoothstep(
     params.uTearThreshold.x,
-    params.uTearThreshold.x + 0.18,
-    displacementAmount,
+    params.uTearThreshold.x + 0.17,
+    strainMeasure,
   );
-  let fractureNoise = smoothstep(
-    0.38,
-    0.73,
-    fine * 0.58 + detail * 0.42,
+  let structure = radialStructure3(
+    materialPosition,
+    frame.pointerDelta.w,
+    clamp(params.uFractalBranches.x, 3.0, 8.0),
+    clamp(params.uBranchSharpness.x, 1.0, 7.0),
   );
-  let tearing = strain
-    * (1.0 - fractureNoise)
-    * params.uStrainTearing.x;
-  let centerEvacuation = strain
-    * (1.0 - smoothstep(0.16, 0.52, radius))
-    * params.uStrainTearing.x
-    * 0.68;
+  let sheetSupport = structure.sheet * params.uSheetStrength.x;
+  let filamentSupport = structure.filament * params.uFineStretchDetail.x;
+  let structureSupport = clamp(
+    max(structure.trunk, sheetSupport * 0.92)
+      + filamentSupport * 0.32,
+    0.0,
+    1.25,
+  );
 
-  let stretchedRidges = pow(
-    max(0.0, 1.0 - abs(sin(
-      q.x * 29.0
-        + q.y * 17.0
-        - q.z * 13.0
-        + dot(flow.displacement, vec3f(11.0, -7.0, 9.0))
-    ))),
-    2.6,
+  let materialGrain = smoothstep(0.30, 0.74, detail * 0.62 + fine * 0.38);
+  let fracturedSupport = clamp(
+    0.16
+      + structureSupport * 0.88
+      + materialGrain * 0.24,
+    0.0,
+    1.12,
   );
-  let microStructure = mix(
+  let fragmentedDensity = mix(
     1.0,
-    0.50 + stretchedRidges * 0.78,
-    strain * params.uFineStretchDetail.x,
+    fracturedSupport,
+    strain * 0.88,
   );
 
+  let expansionLoss = clamp(
+    expansionGradient * params.uExpansionDensityLoss.x * 0.22,
+    0.0,
+    0.84,
+  );
+  let centerEvacuation = smoothstep(
+    params.uTearThreshold.x * 0.55,
+    params.uTearThreshold.x + 0.12,
+    radialDisplacement,
+  )
+    * (1.0 - smoothstep(0.12, 0.48, worldRadius))
+    * params.uExpansionDensityLoss.x
+    * 0.88;
+  let offStructureTear = strain
+    * (1.0 - clamp(structureSupport, 0.0, 1.0))
+    * params.uStrainTearing.x
+    * 0.72;
+
+  let fineFilament = mix(
+    1.0,
+    0.62
+      + structure.filament * params.uFineStretchDetail.x * 0.58
+      + structure.sheet * params.uSheetStrength.x * 0.18,
+    strain,
+  );
   let baseDensity = coreEnvelope
-    * (0.08 + porous * 0.92)
-    * microStructure;
+    * (0.07 + porous * 0.93)
+    * fragmentedDensity
+    * fineFilament;
   let densityAfterTear = baseDensity
-    * max(0.0, 1.0 - tearing - centerEvacuation);
+    * max(
+      0.0,
+      1.0 - expansionLoss - centerEvacuation - offStructureTear,
+    );
 
   out.density = max(0.0, densityAfterTear * params.uDensity.x);
   out.detail = clamp(
-    detail * 0.52
-      + fine * 0.23
-      + stretchedRidges * strain * 0.35,
+    detail * 0.48
+      + fine * 0.20
+      + structure.trunk * strain * 0.14
+      + structure.sheet * strain * params.uSheetStrength.x * 0.12
+      + structure.filament * strain * params.uFineStretchDetail.x * 0.22,
     0.0,
     1.0,
   );
-  out.activity = clamp(strain + length(flow.velocity) * 0.16, 0.0, 1.0);
+  out.activity = clamp(
+    strain
+      + length(flow.velocity) * 0.13
+      + structure.filament * strain * 0.22,
+    0.0,
+    1.0,
+  );
   return out;
 }
 
@@ -487,7 +654,7 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
   let focalLength = 1.0 / tan(fovRadians * 0.5);
   let rd = normalize(forward * focalLength + cameraRight * screen.x + cameraUp * screen.y);
 
-  let hit = intersectSphere(ro, rd, 1.30);
+  let hit = intersectSphere(ro, rd, 1.32);
   var background = mix(
     vec3f(0.007, 0.010, 0.017),
     vec3f(0.030, 0.047, 0.070),
@@ -517,7 +684,7 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
         break;
       }
       let p = ro + rd * t;
-      if (length(p) < 1.28) {
+      if (length(p) < 1.30) {
         let volumeSample = densityField(p);
         if (volumeSample.density > 0.0015) {
           let q = crawlWarp(
@@ -533,13 +700,13 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
           let outward = normalize(p + normalPerturbation + vec3f(0.0001));
           let directional = clamp(dot(outward, lightDir) * 0.5 + 0.5, 0.0, 1.0);
           let localShadow = exp(-volumeSample.density * params.uShadow.x * 0.25);
-          let detailLight = 0.67 + volumeSample.detail * 0.52;
-          let light = (0.15 + 0.85 * directional * localShadow) * detailLight;
-          let rim = pow(1.0 - abs(dot(outward, -rd)), 2.45);
+          let detailLight = 0.64 + volumeSample.detail * 0.58;
+          let light = (0.14 + 0.86 * directional * localShadow) * detailLight;
+          let rim = pow(1.0 - abs(dot(outward, -rd)), 2.35);
           let sampleColor = gasColor * (
             light
-              + rim * (0.11 + volumeSample.activity * 0.18)
-              + volumeSample.detail * volumeSample.activity * 0.075
+              + rim * (0.10 + volumeSample.activity * 0.22)
+              + volumeSample.detail * volumeSample.activity * 0.090
           );
           let alpha = 1.0 - exp(-volumeSample.density * params.uAbsorption.x * stepLength);
           scattering += transmittance * alpha * sampleColor;
@@ -581,50 +748,54 @@ fn fsMain(in: VertexOut) -> @location(0) vec4f {
     "uCameraFov": { "type": "float", "default": 46.0, "min": 20.0, "max": 100.0, "step": 1.0, "label": { "zh": "相机视野", "en": "Camera FOV" }, "group": { "zh": "相机", "en": "Camera" } },
     "uCameraOrbitSpeed": { "type": "float", "default": 0.0, "min": -30.0, "max": 30.0, "step": 0.1, "label": { "zh": "自动环绕速度", "en": "Auto Orbit Speed" }, "group": { "zh": "相机", "en": "Camera" } },
 
-    "uDensity": { "type": "float", "default": 0.78, "min": 0.1, "max": 3.0, "step": 0.01, "label": { "zh": "气体密度", "en": "Gas Density" }, "group": { "zh": "体积", "en": "Volume" } },
-    "uAbsorption": { "type": "float", "default": 1.22, "min": 0.2, "max": 8.0, "step": 0.01, "label": { "zh": "吸收", "en": "Absorption" }, "group": { "zh": "体积", "en": "Volume" } },
+    "uDensity": { "type": "float", "default": 0.76, "min": 0.1, "max": 3.0, "step": 0.01, "label": { "zh": "气体密度", "en": "Gas Density" }, "group": { "zh": "体积", "en": "Volume" } },
+    "uAbsorption": { "type": "float", "default": 1.18, "min": 0.2, "max": 8.0, "step": 0.01, "label": { "zh": "吸收", "en": "Absorption" }, "group": { "zh": "体积", "en": "Volume" } },
 
     "uCoreRadius": { "type": "float", "default": 0.40, "min": 0.25, "max": 0.65, "step": 0.005, "label": { "zh": "核心半径", "en": "Core Radius" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
     "uCoreWobble": { "type": "float", "default": 0.17, "min": 0.0, "max": 0.34, "step": 0.005, "label": { "zh": "核心蠕动", "en": "Core Wobble" }, "description": { "zh": "同时驱动核心的三维材质形变和二维低频流场。", "en": "Drives both 3D material deformation and low-frequency 2D flow in the idle core." }, "group": { "zh": "核心形态", "en": "Core Shape" } },
-    "uCoreDetailStrength": { "type": "float", "default": 1.28, "min": 0.0, "max": 2.4, "step": 0.01, "label": { "zh": "表面细节", "en": "Surface Detail" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
-    "uNoiseScale": { "type": "float", "default": 4.6, "min": 1.0, "max": 9.0, "step": 0.02, "label": { "zh": "材质分形尺度", "en": "Material Fractal Scale" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
-    "uDetailCutoff": { "type": "float", "default": 0.57, "min": 0.18, "max": 0.84, "step": 0.01, "label": { "zh": "内部疏松度", "en": "Internal Porosity" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
-    "uTurbulence": { "type": "float", "default": 1.05, "min": 0.0, "max": 2.8, "step": 0.01, "label": { "zh": "翻涌速度", "en": "Rolling Speed" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
-    "uExpansion": { "type": "float", "default": 0.10, "min": 0.0, "max": 1.5, "step": 0.01, "label": { "zh": "呼吸扩张", "en": "Breathing Expansion" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+    "uCoreDetailStrength": { "type": "float", "default": 1.30, "min": 0.0, "max": 2.4, "step": 0.01, "label": { "zh": "表面细节", "en": "Surface Detail" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+    "uNoiseScale": { "type": "float", "default": 4.8, "min": 1.0, "max": 9.0, "step": 0.02, "label": { "zh": "材质分形尺度", "en": "Material Fractal Scale" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+    "uDetailCutoff": { "type": "float", "default": 0.58, "min": 0.18, "max": 0.84, "step": 0.01, "label": { "zh": "内部疏松度", "en": "Internal Porosity" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+    "uTurbulence": { "type": "float", "default": 1.04, "min": 0.0, "max": 2.8, "step": 0.01, "label": { "zh": "翻涌速度", "en": "Rolling Speed" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
+    "uExpansion": { "type": "float", "default": 0.09, "min": 0.0, "max": 1.5, "step": 0.01, "label": { "zh": "呼吸扩张", "en": "Breathing Expansion" }, "group": { "zh": "核心形态", "en": "Core Shape" } },
 
-    "uFluidInfluence": { "type": "float", "default": 1.65, "min": 0.0, "max": 3.5, "step": 0.01, "label": { "zh": "材质流形变", "en": "Material Flow Deformation" }, "description": { "zh": "将二维 displacement 三平面重建为三维材质坐标位移；爆裂和回收始终查询同一核心密度。", "en": "Reconstructs 2D displacement into 3D material-coordinate motion; burst and return always sample the same core density." }, "group": { "zh": "材质流", "en": "Material Flow" } },
-    "uMaterialResponse": { "type": "float", "default": 1.15, "min": 0.2, "max": 2.5, "step": 0.01, "label": { "zh": "材质惯性", "en": "Material Response" }, "description": { "zh": "控制速度积累为材质位移的速度。", "en": "Controls how quickly velocity accumulates into material displacement." }, "group": { "zh": "材质流", "en": "Material Flow" } },
-    "uElasticity": { "type": "float", "default": 1.18, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "弹性恢复", "en": "Elastic Restoration" }, "description": { "zh": "真实作用于 displacement 的恢复力，而不是形状 alpha 混合。", "en": "A restoring force applied directly to displacement instead of alpha blending shapes." }, "group": { "zh": "材质流", "en": "Material Flow" } },
-    "uElasticDamping": { "type": "float", "default": 1.05, "min": 0.0, "max": 4.0, "step": 0.01, "label": { "zh": "弹性阻尼", "en": "Elastic Damping" }, "group": { "zh": "材质流", "en": "Material Flow" } },
-    "uMaxDisplacement": { "type": "float", "default": 0.52, "min": 0.10, "max": 0.90, "step": 0.01, "label": { "zh": "最大位移", "en": "Max Displacement" }, "group": { "zh": "材质流", "en": "Material Flow" } },
-    "uFlowSharpen": { "type": "float", "default": 0.34, "min": 0.0, "max": 1.5, "step": 0.01, "label": { "zh": "流场锐化", "en": "Flow Sharpening" }, "description": { "zh": "轻量反扩散修正，减弱半拉格朗日平流造成的位移模糊。", "en": "A light anti-diffusion correction that reduces displacement blur from semi-Lagrangian advection." }, "group": { "zh": "材质流", "en": "Material Flow" } },
-    "uTearThreshold": { "type": "float", "default": 0.10, "min": 0.02, "max": 0.45, "step": 0.005, "label": { "zh": "拉伸撕裂阈值", "en": "Stretch Tear Threshold" }, "group": { "zh": "材质流", "en": "Material Flow" } },
-    "uStrainTearing": { "type": "float", "default": 0.92, "min": 0.0, "max": 1.8, "step": 0.01, "label": { "zh": "拉伸撕裂", "en": "Strain Tearing" }, "description": { "zh": "高位移区域从同一材质中产生孔洞和断裂，不额外叠加第二套爆裂形状。", "en": "Creates holes and breakup from highly displaced material without adding a second burst shape." }, "group": { "zh": "材质流", "en": "Material Flow" } },
-    "uFineStretchDetail": { "type": "float", "default": 0.82, "min": 0.0, "max": 1.5, "step": 0.01, "label": { "zh": "拉丝细节", "en": "Stretch Filament Detail" }, "group": { "zh": "材质流", "en": "Material Flow" } },
+    "uFluidInfluence": { "type": "float", "default": 1.82, "min": 0.0, "max": 3.5, "step": 0.01, "label": { "zh": "材质流形变", "en": "Material Flow Deformation" }, "description": { "zh": "二维位移三平面重建成三维材质运动；爆裂和回收始终是同一团核心物质。", "en": "Reconstructs 2D displacement into 3D material motion; burst and return always deform the same core material." }, "group": { "zh": "材质流", "en": "Material Flow" } },
+    "uMaterialResponse": { "type": "float", "default": 1.28, "min": 0.2, "max": 2.5, "step": 0.01, "label": { "zh": "材质惯性", "en": "Material Response" }, "description": { "zh": "控制速度积累为材质位移的速度。", "en": "Controls how quickly velocity accumulates into material displacement." }, "group": { "zh": "材质流", "en": "Material Flow" } },
+    "uElasticity": { "type": "float", "default": 1.04, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "弹性恢复", "en": "Elastic Restoration" }, "description": { "zh": "直接作用于位移的弹簧恢复力；径向和切向在爆裂阶段采用不同恢复速度。", "en": "A spring force applied directly to displacement, with anisotropic radial/tangential recovery during bursts." }, "group": { "zh": "材质流", "en": "Material Flow" } },
+    "uElasticDamping": { "type": "float", "default": 0.86, "min": 0.0, "max": 4.0, "step": 0.01, "label": { "zh": "弹性阻尼", "en": "Elastic Damping" }, "group": { "zh": "材质流", "en": "Material Flow" } },
+    "uMaxDisplacement": { "type": "float", "default": 0.64, "min": 0.10, "max": 0.95, "step": 0.01, "label": { "zh": "最大位移", "en": "Max Displacement" }, "group": { "zh": "材质流", "en": "Material Flow" } },
+    "uFlowSharpen": { "type": "float", "default": 0.30, "min": 0.0, "max": 1.5, "step": 0.01, "label": { "zh": "流场锐化", "en": "Flow Sharpening" }, "description": { "zh": "轻量反扩散修正，减少平流模糊但避免形成周期网纹。", "en": "A light anti-diffusion correction that preserves motion detail without periodic mesh-like ridges." }, "group": { "zh": "材质流", "en": "Material Flow" } },
+    "uTearThreshold": { "type": "float", "default": 0.075, "min": 0.02, "max": 0.45, "step": 0.005, "label": { "zh": "拉伸撕裂阈值", "en": "Stretch Tear Threshold" }, "group": { "zh": "材质流", "en": "Material Flow" } },
+    "uStrainTearing": { "type": "float", "default": 1.05, "min": 0.0, "max": 1.8, "step": 0.01, "label": { "zh": "拉伸撕裂", "en": "Strain Tearing" }, "description": { "zh": "只在高拉伸且远离径向主干支撑的位置挖去材质，形成切片和空洞。", "en": "Removes material only in highly stretched regions away from radial trunk support, producing slices and cavities." }, "group": { "zh": "材质流", "en": "Material Flow" } },
+    "uFineStretchDetail": { "type": "float", "default": 0.96, "min": 0.0, "max": 1.5, "step": 0.01, "label": { "zh": "主干细丝", "en": "Trunk Filaments" }, "description": { "zh": "细丝仅沿径向主干和高拉伸区域出现，不再使用全空间周期网格。", "en": "Filaments appear only along radial trunks in stretched material instead of a full-space periodic mesh." }, "group": { "zh": "材质流", "en": "Material Flow" } },
+    "uSheetStrength": { "type": "float", "default": 0.88, "min": 0.0, "max": 1.8, "step": 0.01, "label": { "zh": "撕裂薄片", "en": "Torn Sheets" }, "description": { "zh": "沿径向主干保留宽而薄的流体褶皱。", "en": "Preserves broad, thin fluid sheets attached to the radial trunks." }, "group": { "zh": "材质流", "en": "Material Flow" } },
+    "uExpansionDensityLoss": { "type": "float", "default": 1.10, "min": 0.0, "max": 2.0, "step": 0.01, "label": { "zh": "膨胀密度损失", "en": "Expansion Density Loss" }, "description": { "zh": "向外拉伸时降低局部密度并挖空中心，避免只把核心压扁。", "en": "Reduces density under outward expansion and evacuates the center instead of merely flattening the core." }, "group": { "zh": "材质流", "en": "Material Flow" } },
 
     "uAdvection": { "type": "float", "default": 1.10, "min": 0.1, "max": 2.0, "step": 0.01, "label": { "zh": "平流速度", "en": "Advection" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
-    "uViscosity": { "type": "float", "default": 0.055, "min": 0.0, "max": 1.0, "step": 0.005, "label": { "zh": "粘性", "en": "Viscosity" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
-    "uVorticity": { "type": "float", "default": 1.35, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "涡量保持", "en": "Vorticity" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
-    "uVelocityDissipation": { "type": "float", "default": 0.34, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "速度耗散", "en": "Velocity Dissipation" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
+    "uViscosity": { "type": "float", "default": 0.045, "min": 0.0, "max": 1.0, "step": 0.005, "label": { "zh": "粘性", "en": "Viscosity" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
+    "uVorticity": { "type": "float", "default": 1.08, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "后段卷曲", "en": "Late Vorticity" }, "description": { "zh": "爆裂前段会自动压低涡量，先径向拉开；进入中段后再逐渐卷曲。", "en": "Vorticity is suppressed early so material stretches radially first, then ramps up later to curl the extended structures." }, "group": { "zh": "二维解算", "en": "2D Solver" } },
+    "uVelocityDissipation": { "type": "float", "default": 0.30, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "速度耗散", "en": "Velocity Dissipation" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
     "uSolverSubsteps": { "type": "int", "default": 2, "min": 1, "max": 4, "step": 1, "label": { "zh": "解算子步", "en": "Solver Substeps" }, "group": { "zh": "二维解算", "en": "2D Solver" } },
 
-    "uClickBurstStrength": { "type": "float", "default": 1.35, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "点击冲击强度", "en": "Click Impact Strength" }, "group": { "zh": "冲击", "en": "Impact" } },
-    "uBurstDuration": { "type": "float", "default": 1.75, "min": 0.45, "max": 4.0, "step": 0.01, "label": { "zh": "恢复周期", "en": "Recovery Window" }, "description": { "zh": "只用于控制冲击阶段和自动节拍节流；形状恢复由弹性位移解算完成。", "en": "Controls impact timing and beat throttling only; shape recovery comes from the elastic displacement solver." }, "group": { "zh": "冲击", "en": "Impact" } },
-    "uBurstForce": { "type": "float", "default": 2.85, "min": 0.0, "max": 5.0, "step": 0.01, "label": { "zh": "冲击推力", "en": "Impact Force" }, "group": { "zh": "冲击", "en": "Impact" } },
-    "uFractalBranches": { "type": "float", "default": 7.2, "min": 3.0, "max": 10.0, "step": 0.1, "label": { "zh": "冲击分形复杂度", "en": "Impact Fractal Complexity" }, "group": { "zh": "冲击", "en": "Impact" } },
-    "uBranchSharpness": { "type": "float", "default": 4.1, "min": 1.0, "max": 7.0, "step": 0.1, "label": { "zh": "冲击分支锐度", "en": "Impact Branch Sharpness" }, "group": { "zh": "冲击", "en": "Impact" } },
-    "uBurstReach": { "type": "float", "default": 0.46, "min": 0.20, "max": 0.80, "step": 0.01, "label": { "zh": "冲击作用范围", "en": "Impact Reach" }, "group": { "zh": "冲击", "en": "Impact" } },
+    "uClickBurstStrength": { "type": "float", "default": 1.42, "min": 0.0, "max": 3.0, "step": 0.01, "label": { "zh": "点击冲击强度", "en": "Click Impact Strength" }, "group": { "zh": "冲击", "en": "Impact" } },
+    "uBurstDuration": { "type": "float", "default": 1.85, "min": 0.45, "max": 4.0, "step": 0.01, "label": { "zh": "恢复周期", "en": "Recovery Window" }, "description": { "zh": "用于冲击阶段、卷曲延迟和自动节拍节流；实际回收仍由弹性位移解算完成。", "en": "Controls impact staging, curl delay, and beat throttling; the actual return still comes from the elastic displacement solver." }, "group": { "zh": "冲击", "en": "Impact" } },
+    "uBurstForce": { "type": "float", "default": 3.18, "min": 0.0, "max": 5.0, "step": 0.01, "label": { "zh": "径向冲击推力", "en": "Radial Impact Force" }, "group": { "zh": "冲击", "en": "Impact" } },
+    "uFractalBranches": { "type": "float", "default": 6.0, "min": 3.0, "max": 8.0, "step": 1.0, "label": { "zh": "径向主干数量", "en": "Radial Trunk Count" }, "description": { "zh": "控制一次爆裂中从中心向外展开的主要方向数量。", "en": "Controls the number of major center-outward directions in each burst." }, "group": { "zh": "冲击", "en": "Impact" } },
+    "uBranchSharpness": { "type": "float", "default": 3.6, "min": 1.0, "max": 7.0, "step": 0.1, "label": { "zh": "主干收束度", "en": "Trunk Sharpness" }, "group": { "zh": "冲击", "en": "Impact" } },
+    "uBurstReach": { "type": "float", "default": 0.58, "min": 0.20, "max": 0.80, "step": 0.01, "label": { "zh": "径向作用范围", "en": "Radial Reach" }, "group": { "zh": "冲击", "en": "Impact" } },
+    "uRadialBias": { "type": "float", "default": 1.35, "min": 0.2, "max": 2.5, "step": 0.01, "label": { "zh": "径向偏置", "en": "Radial Bias" }, "description": { "zh": "提高中心向外的速度分量，减弱爆裂初期的网状横向剪切。", "en": "Strengthens center-outward velocity and suppresses mesh-like lateral shear during the initial burst." }, "group": { "zh": "冲击", "en": "Impact" } },
+    "uCurlDelay": { "type": "float", "default": 0.36, "min": 0.05, "max": 0.80, "step": 0.01, "label": { "zh": "卷曲延迟", "en": "Curl Delay" }, "description": { "zh": "爆裂周期达到该比例后才逐渐恢复明显涡量。", "en": "Delays strong vorticity until this fraction of the burst cycle." }, "group": { "zh": "冲击", "en": "Impact" } },
 
     "uAudioPaused": { "type": "boolean", "default": false, "label": { "zh": "暂停音乐", "en": "Pause Audio" }, "description": { "zh": "暂停音频驱动、自动节拍冲击和波形运动；鼠标点击仍有效。", "en": "Pauses audio drive, automatic beat impacts, and waveform motion; pointer impacts remain active." }, "group": { "zh": "音频", "en": "Audio" } },
     "uAudioBurstEnabled": { "type": "boolean", "default": true, "label": { "zh": "音频触发冲击", "en": "Audio Impact Trigger" }, "group": { "zh": "音频", "en": "Audio" } },
-    "uAudioBurstStrength": { "type": "float", "default": 0.82, "min": 0.0, "max": 2.5, "step": 0.01, "label": { "zh": "音频冲击强度", "en": "Audio Impact Strength" }, "group": { "zh": "音频", "en": "Audio" } },
+    "uAudioBurstStrength": { "type": "float", "default": 0.84, "min": 0.0, "max": 2.5, "step": 0.01, "label": { "zh": "音频冲击强度", "en": "Audio Impact Strength" }, "group": { "zh": "音频", "en": "Audio" } },
     "uBeatThreshold": { "type": "float", "default": 0.72, "min": 0.45, "max": 0.95, "step": 0.01, "label": { "zh": "节拍阈值", "en": "Beat Threshold" }, "group": { "zh": "音频", "en": "Audio" } },
-    "uBeatCooldown": { "type": "float", "default": 1.15, "min": 0.2, "max": 3.0, "step": 0.01, "label": { "zh": "节拍冷却", "en": "Beat Cooldown" }, "group": { "zh": "音频", "en": "Audio" } },
-    "uAudioInfluence": { "type": "float", "default": 0.56, "min": 0.0, "max": 2.5, "step": 0.01, "label": { "zh": "音频呼吸", "en": "Audio Breathing" }, "group": { "zh": "音频", "en": "Audio" } },
+    "uBeatCooldown": { "type": "float", "default": 1.20, "min": 0.2, "max": 3.0, "step": 0.01, "label": { "zh": "节拍冷却", "en": "Beat Cooldown" }, "group": { "zh": "音频", "en": "Audio" } },
+    "uAudioInfluence": { "type": "float", "default": 0.54, "min": 0.0, "max": 2.5, "step": 0.01, "label": { "zh": "音频呼吸", "en": "Audio Breathing" }, "group": { "zh": "音频", "en": "Audio" } },
 
-    "uSteps": { "type": "int", "default": 92, "min": 40, "max": 160, "step": 1, "label": { "zh": "光线步数", "en": "Ray Steps" }, "group": { "zh": "采样", "en": "Sampling" } },
-    "uJitter": { "type": "float", "default": 0.18, "min": 0.0, "max": 1.0, "step": 0.01, "label": { "zh": "采样抖动", "en": "Jitter" }, "group": { "zh": "采样", "en": "Sampling" } },
-    "uShadow": { "type": "float", "default": 1.22, "min": 0.0, "max": 4.0, "step": 0.01, "label": { "zh": "局部阴影", "en": "Local Shadow" }, "group": { "zh": "光照", "en": "Lighting" } },
+    "uSteps": { "type": "int", "default": 96, "min": 40, "max": 160, "step": 1, "label": { "zh": "光线步数", "en": "Ray Steps" }, "group": { "zh": "采样", "en": "Sampling" } },
+    "uJitter": { "type": "float", "default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01, "label": { "zh": "采样抖动", "en": "Jitter" }, "group": { "zh": "采样", "en": "Sampling" } },
+    "uShadow": { "type": "float", "default": 1.25, "min": 0.0, "max": 4.0, "step": 0.01, "label": { "zh": "局部阴影", "en": "Local Shadow" }, "group": { "zh": "光照", "en": "Lighting" } },
     "uGasColor": { "type": "color", "default": "#789dd0", "label": { "zh": "气体颜色", "en": "Gas Color" }, "group": { "zh": "外观", "en": "Appearance" } },
     "uWaveColor": { "type": "color", "default": "#55d8ff", "label": { "zh": "波形颜色", "en": "Wave Color" }, "group": { "zh": "外观", "en": "Appearance" } },
     "uUncappedBenchmark": { "type": "boolean", "default": false, "label": { "zh": "取消帧率限制", "en": "Uncapped Benchmark" }, "group": { "zh": "性能", "en": "Performance" } }
