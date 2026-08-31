@@ -18,6 +18,7 @@ export class ParticleWebGL2Backend implements RendererBackend {
   private readonly canvas: HTMLCanvasElement;
   private readonly experiment: RendererBackendOptions['experiment'];
   private readonly uniforms: Record<string, THREE.IUniform> = {};
+  private readonly viewProj = new THREE.Matrix4();
   private renderer?: THREE.WebGLRenderer;
   private scene?: THREE.Scene;
   private camera?: THREE.PerspectiveCamera;
@@ -67,6 +68,7 @@ export class ParticleWebGL2Backend implements RendererBackend {
     this.geometry.instanceCount = 1;
 
     this.uniforms.uTime = { value: 0 };
+    this.uniforms.uViewProj = { value: this.viewProj };
     this.uniforms.uCamRight = { value: new THREE.Vector3(1, 0, 0) };
     this.uniforms.uCamUp = { value: new THREE.Vector3(0, 1, 0) };
 
@@ -148,6 +150,7 @@ export class ParticleWebGL2Backend implements RendererBackend {
     this.camera.position.set(distance * cp * sy, distance * sp, distance * cp * cy);
     this.camera.lookAt(0, 0, 0);
     this.camera.updateMatrixWorld();
+    this.viewProj.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
 
     const e = this.camera.matrixWorld.elements;
     (this.uniforms.uCamRight.value as THREE.Vector3).set(e[0], e[1], e[2]);
