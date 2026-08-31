@@ -47,8 +47,8 @@ export const experiments: ExperimentDefinition[] = [
   }),
   defineExperiment({
     id: 'solar-orbital-prominence', title: { zh: '轨道线日珥粒子球', en: 'Orbital-Line Solar Prominence' },
-    description: { zh: '在日珥粒子球外加入四条首尾相接的高亮白色电子轨道线。轨道缓慢旋转并律动，喷发源严格取自轨道线向球面的径向投影；同时提供球面颜色、亮度和日珥连续光谱映射参数。', en: 'Adds four closed luminous electron-like orbit lines around the prominence shell. The lines rotate and pulse slowly, and eruption sources are taken from their radial projection onto the sphere, with adjustable shell color/brightness and prominence spectrum mapping.' },
-    category: { zh: '粒子', en: 'Particles' }, tags: ['WebGL2','GLSL','Particles','Prominence','Orbit Lines','HLSL-portable'], backend: 'particle-webgl2', languages: ['GLSL'], sourceFile: 'shader.frag', maxPixelRatio: 1.25, vertexShader: solarOrbitalProminenceVertex, fragmentShader: solarOrbitalProminenceFragment,
+    description: { zh: '用一根首尾相连的高亮白色闭合曲线缠绕粒子球。活跃轨道段会向球面弯下并同步增亮，其径向投影直接成为日珥根部；被掀起的粒子沿轨道切线牵引，并使用暖白到红、金、青、蓝、紫的阳光色散映射。轨道粗细、牵引强度与高亮均可参数化。', en: 'A single luminous closed curve weaves around the particle shell. Active orbit segments bend toward the surface and brighten in sync; their radial projection becomes the prominence root, while lifted particles follow the orbit tangent and map through a sunlight-dispersion palette from warm white/red through gold, cyan, blue and violet. Orbit thickness, pull and highlight are parameterized.' },
+    category: { zh: '粒子', en: 'Particles' }, tags: ['WebGL2','GLSL','Particles','Prominence','Continuous Orbit','Tether','HLSL-portable'], backend: 'particle-webgl2', languages: ['GLSL'], sourceFile: 'shader.frag', maxPixelRatio: 1.25, vertexShader: solarOrbitalProminenceVertex, fragmentShader: solarOrbitalProminenceFragment,
   }),
   defineExperiment({
     id: 'chimney-smoke', title: { zh: '烟囱烟雾体积渲染', en: 'Chimney Smoke Volume' },
