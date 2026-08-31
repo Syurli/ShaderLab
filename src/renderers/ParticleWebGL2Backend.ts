@@ -12,6 +12,62 @@ function toUniformValue(value: number | boolean | string, type: string) {
   return value;
 }
 
+function withGlsl3Version(source: string) {
+  return /^\s*#version\s+300\s+es\b/.test(source) ? source : `#version 300 es\n${source}`;
+}
+
+function compileShader(
+  gl: WebGL2RenderingContext,
+  type: number,
+  source: string,
+  label: string,
+) {
+  const shader = gl.createShader(type);
+  if (!shader) throw new Error(`[ParticleWebGL2] Failed to create ${label} shader.`);
+
+  gl.shaderSource(shader, withGlsl3Version(source));
+  gl.compileShader(shader);
+
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(shader) || 'Unknown GLSL compiler error.';
+    gl.deleteShader(shader);
+    throw new Error(`[ParticleWebGL2] ${label} shader compile failed:\n${log}`);
+  }
+
+  return shader;
+}
+
+function validateShaderProgram(
+  gl: WebGL2RenderingContext,
+  vertexSource: string,
+  fragmentSource: string,
+) {
+  const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource, 'vertex');
+  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource, 'fragment');
+  const program = gl.createProgram();
+
+  if (!program) {
+    gl.deleteShader(vertex);
+    gl.deleteShader(fragment);
+    throw new Error('[ParticleWebGL2] Failed to create shader validation program.');
+  }
+
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+
+  const linked = gl.getProgramParameter(program, gl.LINK_STATUS);
+  const log = gl.getProgramInfoLog(program) || '';
+
+  gl.deleteProgram(program);
+  gl.deleteShader(vertex);
+  gl.deleteShader(fragment);
+
+  if (!linked) {
+    throw new Error(`[ParticleWebGL2] Shader program link failed:\n${log || 'Unknown GLSL linker error.'}`);
+  }
+}
+
 export class ParticleWebGL2Backend implements RendererBackend {
   readonly id = 'particle-webgl2';
 
@@ -48,6 +104,13 @@ export class ParticleWebGL2Backend implements RendererBackend {
     });
     this.renderer.setClearColor(0x050506, 1);
 
+    // Validate the exact GLSL sources up front. The regular TypeScript/Vite build cannot
+    // detect GPU shader compilation failures, so without this a bad shader only appears as
+    // a black canvas. RawShaderMaterial receives the sources without their own #version;
+    // Three.js injects #version 300 es from glslVersion below.
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    validateShaderProgram(gl, this.experiment.vertexShader, this.experiment.fragmentShader);
+
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(47, 1, 0.05, 30);
 
@@ -80,6 +143,7 @@ export class ParticleWebGL2Backend implements RendererBackend {
       vertexShader: this.experiment.vertexShader,
       fragmentShader: this.experiment.fragmentShader,
       uniforms: this.uniforms,
+      glslVersion: THREE.GLSL3,
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
