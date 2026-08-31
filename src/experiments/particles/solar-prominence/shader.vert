@@ -13,6 +13,7 @@ uniform float uEruptionChance;
 uniform float uInfluenceRadius;
 uniform float uRibbonLength;
 uniform float uRibbonWidth;
+uniform float uEjectionDensity;
 uniform float uArcHeight;
 uniform float uArcLength;
 uniform float uShapeRandomness;
@@ -20,6 +21,9 @@ uniform float uFlightDuration;
 uniform float uReturnDamping;
 uniform float uReturnFrequency;
 uniform float uSurfaceWave;
+uniform float uWaveRange;
+uniform float uWaveSpeed;
+uniform float uWaveDamping;
 uniform float uParticleSize;
 uniform float uRotationSpeed;
 uniform float uCameraDistance;
@@ -88,113 +92,152 @@ void main() {
   float sphereR = 1.62;
   float baseR = sphereR + (sb - 0.5) * 0.030;
 
-  float bestStrength = 0.0;
-  float bestHeight = 0.0;
-  float bestSide = 0.0;
-  vec3 bestTangent = vec3(1.0, 0.0, 0.0);
+  // Contributions are accumulated instead of choosing one event with a hard max.
+  // That removes visible switching when two eruptions overlap at high rates.
+  vec3 eruptionOffset = vec3(0.0);
+  float eruptionVisual = 0.0;
   float surfaceResponse = 0.0;
-  float postImpact = 0.0;
+  float settlingVisual = 0.0;
 
-  // Five independent event lanes. Rate/chance control how often several are alive together.
-  for (int i = 0; i < 5; ++i) {
+  // Four independent lanes, each keeping the current event plus two historical events.
+  // Old events fade before leaving the history window, so a new time slot never snaps
+  // particles back to the shell while they are still visibly flying or settling.
+  for (int i = 0; i < 4; ++i) {
     float fi = float(i);
     float randomPeriod = mix(3.7, 5.4, hash11(fi * 41.7 + 3.1));
     float slotLength = randomPeriod / max(uEruptionRate, 0.15);
+    slotLength = max(slotLength, max(uFlightDuration * 0.72, 0.55));
+
     float shiftedTime = uTime + fi * 1.271;
-    float slotIndex = floor(shiftedTime / slotLength);
-    float slotAge = mod(shiftedTime, slotLength);
+    float currentSlot = floor(shiftedTime / slotLength);
 
-    float chanceNoise = hash11(slotIndex * 5.73 + fi * 19.17);
-    float enabled = step(chanceNoise, uEruptionChance);
-    float startDelay = 0.08 + hash11(slotIndex * 3.11 + fi * 7.77) * 0.24;
-    float eventAge = slotAge - startDelay;
+    for (int h = 0; h < 3; ++h) {
+      float fh = float(h);
+      float eventIndex = currentSlot - fh;
+      float slotLocalAge = shiftedTime - eventIndex * slotLength;
 
-    vec3 emitDir = eruptionDir(slotIndex + fi * 9.17, fi);
-    vec3 helper = abs(emitDir.y) < 0.92 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 tangentA = safeNorm(cross(helper, emitDir));
-    float orientation = TAU * hash11(slotIndex * 2.71 + fi * 5.19);
-    tangentA = rotateAxis(tangentA, emitDir, orientation);
-    vec3 tangentB = safeNorm(cross(tangentA, emitDir));
+      float chanceNoise = hash11(eventIndex * 5.73 + fi * 19.17);
+      float enabled = step(chanceNoise, uEruptionChance);
+      float startDelay = 0.06 + hash11(eventIndex * 3.11 + fi * 7.77) * 0.20;
+      float eventAge = slotLocalAge - startDelay;
 
-    float facing = dot(dir, emitDir);
-    float along = dot(dir, tangentA);
-    float across = dot(dir, tangentB);
+      // Historical events are smoothly faded before they fall out of the three-slot window.
+      float historyFade = 1.0 - smoothstep(slotLength * 2.30, slotLength * 2.88, max(eventAge, 0.0));
+      enabled *= historyFade;
 
-    // Smooth disturbance footprint. It is intentionally much broader than the emitted filament.
-    float localRadius = sqrt(along * along + across * across);
-    float influence = 1.0 - smoothstep(uInfluenceRadius * 0.48, uInfluenceRadius, localRadius);
-    influence *= smoothstep(0.58, 0.985, facing);
+      vec3 emitDir = eruptionDir(eventIndex + fi * 9.17, fi);
+      vec3 helper = abs(emitDir.y) < 0.92 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+      vec3 tangentA = safeNorm(cross(helper, emitDir));
+      float orientation = TAU * hash11(eventIndex * 2.71 + fi * 5.19);
+      tangentA = rotateAxis(tangentA, emitDir, orientation);
+      vec3 tangentB = safeNorm(cross(tangentA, emitDir));
 
-    // A narrow, elongated source tube: thin across, finite along. This prevents the side-view sheet.
-    float randomBend = (hash11(slotIndex * 13.7 + fi * 2.1) - 0.5) * uShapeRandomness;
-    float centerLine =
-      sin(along * mix(14.0, 25.0, sc) + slotIndex * 1.7 + fi) * uRibbonWidth * (0.45 + 0.9 * uShapeRandomness)
-      + randomBend * uRibbonWidth * 0.8;
-    float crossDistance = abs(across - centerLine);
-    float narrowAcross = 1.0 - smoothstep(uRibbonWidth * 0.45, uRibbonWidth, crossDistance);
-    float narrowAlong = 1.0 - smoothstep(uRibbonLength * 0.55, uRibbonLength, abs(along));
+      float facing = dot(dir, emitDir);
+      float along = dot(dir, tangentA);
+      float across = dot(dir, tangentB);
+      float localRadius = sqrt(along * along + across * across);
 
-    // Break the tube into coherent filaments without spreading particles over a whole patch.
-    float filamentNoise = 0.62
-      + 0.24 * sin(along * 56.0 + sa * 4.0 + slotIndex)
-      + 0.14 * sin(along * 91.0 - sc * 8.0 - fi * 2.3);
-    float filament = narrowAcross * narrowAlong * smoothstep(0.33, 0.72, filamentNoise);
+      // Local source disturbance remains smooth, while the travelling wave below can cross
+      // most or all of the sphere independently through uWaveRange.
+      float influence = 1.0 - smoothstep(uInfluenceRadius * 0.42, uInfluenceRadius, localRadius);
+      influence *= smoothstep(0.52, 0.99, facing);
 
-    // Stagger launch times slightly so many particles occupy different parts of the same arc.
-    float launchSpread = mix(0.16, 0.55, uShapeRandomness);
-    float particleDelay = sa * launchSpread + abs(along) * 0.32;
-    float travelAge = eventAge - particleDelay;
-    float p = clamp(travelAge / max(uFlightDuration, 0.15), 0.0, 1.0);
-    float travelling = enabled * step(0.0, travelAge) * step(travelAge, uFlightDuration);
+      // Thin coherent ribbon. Density changes how many particles join the ribbon, not its width.
+      float randomBend = (hash11(eventIndex * 13.7 + fi * 2.1) - 0.5) * uShapeRandomness;
+      float centerLine =
+        sin(along * mix(14.0, 25.0, sc) + eventIndex * 1.7 + fi) * uRibbonWidth * (0.35 + 0.75 * uShapeRandomness)
+        + randomBend * uRibbonWidth * 0.70;
+      float strandOffset = (sa - 0.5) * uRibbonWidth * 0.36;
+      float crossDistance = abs(across - centerLine - strandOffset);
+      float narrowAcross = 1.0 - smoothstep(uRibbonWidth * 0.50, uRibbonWidth, crossDistance);
+      float narrowAlong = 1.0 - smoothstep(uRibbonLength * 0.58, uRibbonLength, abs(along));
 
-    // The arc is a thin parametric tube: both radial and tangential offsets return to zero at landing.
-    float arch = pow(max(sin(p * PI), 0.0), 1.08);
-    float asymmetry = 1.0 + (hash11(slotIndex * 9.31 + fi * 3.7) - 0.5) * 0.45 * uShapeRandomness;
-    float height = uArcHeight * arch * asymmetry;
-    float side = uArcLength * sin(p * PI) * (0.72 + 0.28 * sin(p * PI * 0.5));
-    side *= mix(-1.0, 1.0, step(0.5, hash11(slotIndex * 8.2 + fi * 7.1)));
+      float filamentNoise = clamp(
+        0.56
+        + 0.27 * sin(along * 56.0 + sa * 4.0 + eventIndex)
+        + 0.17 * sin(along * 91.0 - sc * 8.0 - fi * 2.3),
+        0.0,
+        1.0
+      );
+      float density01 = clamp((uEjectionDensity - 0.5) / 3.5, 0.0, 1.0);
+      float densityThreshold = mix(0.68, 0.12, density01);
+      float densityMask = smoothstep(densityThreshold, min(densityThreshold + 0.22, 0.98), filamentNoise);
+      float filament = narrowAcross * narrowAlong * densityMask;
 
-    // Smooth post-impact settling. At t=0 residual is exactly zero, so there is no position pop.
-    float settleT = max(travelAge - uFlightDuration, 0.0);
-    float settleEnvelope = exp(-uReturnDamping * settleT);
-    float settling = enabled * step(uFlightDuration, travelAge) * settleEnvelope;
-    float residual = sin(settleT * uReturnFrequency * TAU) * settleEnvelope;
-    float residualHeight = residual * uSurfaceWave * (0.55 + 0.45 * filament);
-    float residualSide = sin(settleT * uReturnFrequency * TAU * 0.83) * settleEnvelope * uSurfaceWave * 0.45;
+      // Launch staggering fills a single narrow arc with particles instead of creating a sheet.
+      float launchSpread = mix(0.11, 0.42, uShapeRandomness);
+      float particleDelay = sa * launchSpread + abs(along) * 0.24;
+      float travelAge = eventAge - particleDelay;
+      float flightDuration = max(uFlightDuration, 0.15);
+      float p = clamp(travelAge / flightDuration, 0.0, 1.0);
+      float travelling = enabled * step(0.0, travelAge) * step(travelAge, flightDuration);
 
-    float sourceStrength = filament * max(travelling * (0.3 + 0.7 * arch), settling * 0.42);
-    if (sourceStrength > bestStrength) {
-      bestStrength = sourceStrength;
-      bestHeight = height * filament * travelling + residualHeight * filament;
-      bestSide = side * filament * travelling + residualSide * filament;
-      bestTangent = tangentA;
-      postImpact = settling;
+      // Every trajectory has zero displacement at p=0 and p=1, guaranteeing positional
+      // continuity at launch and landing even when eruption frequency is high.
+      float arch = pow(max(sin(p * PI), 0.0), 1.08);
+      float asymmetry = 1.0 + (hash11(eventIndex * 9.31 + fi * 3.7) - 0.5) * 0.42 * uShapeRandomness;
+      float height = uArcHeight * arch * asymmetry;
+      float side = uArcLength * sin(p * PI) * (0.70 + 0.30 * sin(p * PI * 0.5));
+      side *= mix(-1.0, 1.0, step(0.5, hash11(eventIndex * 8.2 + fi * 7.1)));
+
+      float travelMask = filament * travelling;
+      eruptionOffset += dir * (height * travelMask) + tangentA * (side * travelMask);
+      eruptionVisual += travelMask * arch;
+
+      // Landing response begins at exactly zero displacement and then decays continuously.
+      float settleT = max(travelAge - flightDuration, 0.0);
+      float settleEnvelope = exp(-uReturnDamping * settleT);
+      float settling = enabled * step(flightDuration, travelAge) * settleEnvelope;
+      float residual = sin(settleT * uReturnFrequency * TAU) * settleEnvelope;
+      float residualSide = sin(settleT * uReturnFrequency * TAU * 0.83) * settleEnvelope;
+      float settleMask = filament * settling;
+      eruptionOffset += dir * (residual * uSurfaceWave * 0.72 * settleMask);
+      eruptionOffset += tangentA * (residualSide * uSurfaceWave * 0.24 * settleMask);
+      settlingVisual += settleMask * abs(residual);
+
+      // Water-like travelling spherical wave. Chord distance is cheaper than acos and spans
+      // 0..2 across the whole sphere. uWaveRange=2 therefore reaches the opposite side.
+      float chordDistance = sqrt(max(0.0, 2.0 * (1.0 - clamp(facing, -1.0, 1.0))));
+      float waveAge = max(eventAge, 0.0);
+      float waveFront = waveAge * uWaveSpeed;
+      float behindFront = waveFront - chordDistance;
+      float reached = step(0.0, behindFront);
+      float rangeMask = 1.0 - smoothstep(uWaveRange * 0.84, uWaveRange, chordDistance);
+      float waveEnvelope = exp(-uWaveDamping * waveAge) * exp(-max(behindFront, 0.0) * 0.12);
+      float ring = sin(behindFront * 14.0 + fi * 0.71) * waveEnvelope;
+      float localKick = influence * sin(waveAge * 4.2 - localRadius * 20.0) * exp(-waveAge * 0.85);
+      surfaceResponse += enabled * step(0.0, eventAge) * (
+        ring * reached * rangeMask * uSurfaceWave
+        + localKick * uSurfaceWave * 0.30
+      );
     }
-
-    // Broad surrounding particles receive a propagating, damped ripple instead of no response.
-    float eventEnvelope = enabled * step(0.0, eventAge);
-    float ringPhase = eventAge * 3.2 - localRadius * 18.0;
-    float ring = sin(ringPhase) * exp(-max(eventAge, 0.0) * 1.15);
-    surfaceResponse += influence * eventEnvelope * ring * uSurfaceWave * 0.32;
   }
 
-  surfaceResponse = clamp(surfaceResponse, -uSurfaceWave, uSurfaceWave);
-  vec3 world = dir * (baseR + surfaceResponse + bestHeight) + bestTangent * bestSide;
+  // Interference between several eruptions is allowed to exceed one wave amplitude, which
+  // makes the shell read more like a water surface. Clamp only the extreme peaks.
+  surfaceResponse = clamp(surfaceResponse, -uSurfaceWave * 2.4, uSurfaceWave * 2.4);
+  eruptionVisual = clamp(eruptionVisual, 0.0, 1.0);
+  settlingVisual = clamp(settlingVisual, 0.0, 1.0);
 
-  vec3 baseColor = vec3(0.83, 0.70, 0.46);
-  float colorHeight = clamp((max(bestHeight, 0.0) + abs(bestSide) * 0.45) / max(uArcHeight + uArcLength * 0.45, 0.01), 0.0, 1.0);
-  float hue = mix(0.02, 0.88, pow(colorHeight, 0.82));
-  vec3 rainbow = hsv2rgb(vec3(hue, 0.82, 1.0));
-  float rainbowMix = smoothstep(0.05, 0.24, colorHeight) * clamp(bestStrength * 1.5, 0.0, 1.0);
+  vec3 world = dir * (baseR + surfaceResponse) + eruptionOffset;
+
+  // Resting particles are pure white. Only particles actually displaced by an eruption
+  // receive a continuous sunlight-spectrum rainbow according to distance from the shell.
+  vec3 baseColor = vec3(1.0);
+  float excursion = length(eruptionOffset);
+  float colorHeight = clamp(excursion / max(uArcHeight + uArcLength * 0.55, 0.01), 0.0, 1.0);
+  float hue = mix(0.01, 0.88, pow(colorHeight, 0.78));
+  vec3 rainbow = hsv2rgb(vec3(hue, 0.92, 1.0));
+  float rainbowMix = smoothstep(0.018, 0.16, colorHeight) * eruptionVisual;
   vColor = mix(baseColor, rainbow, rainbowMix);
 
   float tw = 0.5 + 0.5 * sin(uTime * mix(2.0, 6.4, sb) + sa * 61.0);
-  vSpark = pow(tw, 9.0) * (0.35 + 0.65 * sc);
-  vAlpha = mix(0.17, 0.58, rainbowMix) * (0.76 + 0.24 * sb) * mix(1.0, 0.92, postImpact);
+  vSpark = pow(tw, 9.0) * (0.30 + 0.70 * sc);
+  vAlpha = mix(0.13, 0.72, rainbowMix) * (0.78 + 0.22 * sb) * mix(1.0, 0.94, settlingVisual);
   vSeed = sa;
 
-  float size = mix(0.0082, 0.0120, sb) * uParticleSize;
-  size *= mix(1.0, 1.32, rainbowMix) * (1.0 + vSpark * 0.30);
+  float size = mix(0.0078, 0.0115, sb) * uParticleSize;
+  size *= mix(1.0, 1.30, rainbowMix) * (1.0 + vSpark * 0.28);
   vec3 billboard = world + (uCamRight * position.x + uCamUp * position.y) * size;
   gl_Position = uViewProj * vec4(billboard, 1.0);
   vUv = position.xy;
