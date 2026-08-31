@@ -40,14 +40,50 @@ function validateShaderProgram(gl: WebGL2RenderingContext, vertexSource: string,
   if (!linked) throw new Error(`[ParticleWebGL2] Shader program link failed:\n${log || 'Unknown GLSL linker error.'}`);
 }
 
-const ORBIT_NORMALS = [
-  new THREE.Vector3(0.22, 0.94, 0.26).normalize(),
-  new THREE.Vector3(-0.61, 0.63, 0.48).normalize(),
-  new THREE.Vector3(0.72, 0.38, -0.58).normalize(),
-  new THREE.Vector3(-0.32, 0.76, -0.56).normalize(),
-];
-const ORBIT_FACTORS = [1.0, 1.07, 1.14, 1.21];
+const TAU = Math.PI * 2;
 const ORBIT_AXIS = new THREE.Vector3(0.18, 1.0, 0.07).normalize();
+const ORBIT_SEGMENTS = 384;
+const ORBIT_SIDES = 6;
+const ORBIT_SHELL_TARGET_RADIUS = 1.68;
+
+function fract(value: number) {
+  return value - Math.floor(value);
+}
+
+function hash11(value: number) {
+  let p = fract(value * 0.1031);
+  p *= p + 33.33;
+  p *= p + p;
+  return fract(p);
+}
+
+function smoothstep(edge0: number, edge1: number, value: number) {
+  const t = THREE.MathUtils.clamp((value - edge0) / Math.max(edge1 - edge0, 1e-6), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+function orbitEventT(eventId: number, lane: number) {
+  return fract(hash11(eventId * 2.713 + lane * 13.17) + lane * 0.173);
+}
+
+function sampleOrbitDirection(t: number, rotationAngle: number, target: THREE.Vector3) {
+  const wrapped = fract(t);
+  const a = TAU * wrapped * 2.0;
+  const b = TAU * (wrapped * 3.0 + 0.125);
+  const c = TAU * (wrapped * 5.0 - 0.08);
+  target.set(
+    Math.cos(a) + 0.36 * Math.cos(c),
+    0.78 * Math.sin(b),
+    Math.sin(a) + 0.36 * Math.sin(c),
+  ).normalize();
+  target.applyAxisAngle(ORBIT_AXIS, rotationAngle);
+  return target.normalize();
+}
+
+interface ActiveOrbitEvent {
+  t: number;
+  strength: number;
+}
 
 export class ParticleWebGL2Backend implements RendererBackend {
   readonly id = 'particle-webgl2';
@@ -61,8 +97,11 @@ export class ParticleWebGL2Backend implements RendererBackend {
   private geometry?: THREE.InstancedBufferGeometry;
   private material?: THREE.RawShaderMaterial;
   private mesh?: THREE.Mesh;
-  private orbitGroup?: THREE.Group;
-  private orbitLines: THREE.LineLoop[] = [];
+  private orbitGeometry?: THREE.BufferGeometry;
+  private orbitMaterial?: THREE.MeshBasicMaterial;
+  private orbitMesh?: THREE.Mesh;
+  private orbitPositionAttribute?: THREE.BufferAttribute;
+  private orbitColorAttribute?: THREE.BufferAttribute;
   private width = 1;
   private height = 1;
   private yaw = 0.55;
@@ -112,35 +151,185 @@ export class ParticleWebGL2Backend implements RendererBackend {
     this.mesh.renderOrder = 1;
     this.scene.add(this.mesh);
 
-    if (this.experiment.metadata.parameters.uOrbitRadius) this.createOrbitLines();
-    this.setParameters(Object.fromEntries(Object.entries(this.experiment.metadata.parameters).map(([name, config]) => [name, config.default])));
+    if (this.experiment.metadata.parameters.uOrbitRadius) this.createOrbitTube();
+    this.setParameters(Object.fromEntries(
+      Object.entries(this.experiment.metadata.parameters).map(([name, config]) => [name, config.default]),
+    ));
   }
 
-  private createOrbitLines() {
+  private createOrbitTube() {
     if (!this.scene) return;
-    this.orbitGroup = new THREE.Group();
-    ORBIT_NORMALS.forEach((normal, i) => {
-      const helper = Math.abs(normal.y) < 0.92 ? new THREE.Vector3(0,1,0) : new THREE.Vector3(1,0,0);
-      const a = helper.clone().cross(normal).normalize();
-      const b = normal.clone().cross(a).normalize();
-      const points: THREE.Vector3[] = [];
-      for (let j = 0; j < 256; j++) {
-        const t = (j / 256) * Math.PI * 2;
-        points.push(a.clone().multiplyScalar(Math.cos(t)).add(b.clone().multiplyScalar(Math.sin(t))));
+
+    const vertexCount = ORBIT_SEGMENTS * ORBIT_SIDES;
+    const positions = new Float32Array(vertexCount * 3);
+    const colors = new Float32Array(vertexCount * 3);
+    const indices = new Uint16Array(ORBIT_SEGMENTS * ORBIT_SIDES * 6);
+
+    let cursor = 0;
+    for (let segment = 0; segment < ORBIT_SEGMENTS; segment += 1) {
+      const next = (segment + 1) % ORBIT_SEGMENTS;
+      for (let side = 0; side < ORBIT_SIDES; side += 1) {
+        const nextSide = (side + 1) % ORBIT_SIDES;
+        const a = segment * ORBIT_SIDES + side;
+        const b = next * ORBIT_SIDES + side;
+        const c = next * ORBIT_SIDES + nextSide;
+        const d = segment * ORBIT_SIDES + nextSide;
+        indices[cursor++] = a;
+        indices[cursor++] = b;
+        indices[cursor++] = d;
+        indices[cursor++] = b;
+        indices[cursor++] = c;
+        indices[cursor++] = d;
       }
-      const geometry = new THREE.BufferGeometry().setFromPoints(points);
-      const core = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.82, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, toneMapped: false });
-      const halo = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, toneMapped: false });
-      const line = new THREE.LineLoop(geometry, core);
-      const glow = new THREE.LineLoop(geometry.clone(), halo);
-      line.userData = { factor: ORBIT_FACTORS[i], phase: i * 1.71, halo: false };
-      glow.userData = { factor: ORBIT_FACTORS[i] * 1.004, phase: i * 1.71, halo: true };
-      line.renderOrder = 3;
-      glow.renderOrder = 2;
-      this.orbitGroup!.add(glow, line);
-      this.orbitLines.push(glow, line);
+    }
+
+    this.orbitPositionAttribute = new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage);
+    this.orbitColorAttribute = new THREE.BufferAttribute(colors, 3).setUsage(THREE.DynamicDrawUsage);
+    this.orbitGeometry = new THREE.BufferGeometry();
+    this.orbitGeometry.setAttribute('position', this.orbitPositionAttribute);
+    this.orbitGeometry.setAttribute('color', this.orbitColorAttribute);
+    this.orbitGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+
+    this.orbitMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.88,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
     });
-    this.scene.add(this.orbitGroup);
+
+    this.orbitMesh = new THREE.Mesh(this.orbitGeometry, this.orbitMaterial);
+    this.orbitMesh.frustumCulled = false;
+    this.orbitMesh.renderOrder = 3;
+    this.scene.add(this.orbitMesh);
+    this.updateOrbitTube(0);
+  }
+
+  private collectActiveOrbitEvents(elapsedSeconds: number): ActiveOrbitEvent[] {
+    const events: ActiveOrbitEvent[] = [];
+    const eruptionRate = Number(this.uniforms.uEruptionRate?.value ?? 4.5);
+    const eruptionChance = Number(this.uniforms.uEruptionChance?.value ?? 1.0);
+    const flightDuration = Math.max(Number(this.uniforms.uFlightDuration?.value ?? 2.45), 0.15);
+
+    for (let lane = 0; lane < 4; lane += 1) {
+      const fi = lane;
+      const randomPeriod = THREE.MathUtils.lerp(3.7, 5.4, hash11(fi * 41.7 + 3.1));
+      const slotLength = Math.max(
+        randomPeriod / Math.max(eruptionRate, 0.15),
+        Math.max(flightDuration * 0.72, 0.55),
+      );
+      const shiftedTime = elapsedSeconds + fi * 1.271;
+      const currentSlot = Math.floor(shiftedTime / slotLength);
+
+      for (let history = 0; history < 3; history += 1) {
+        const eventIndex = currentSlot - history;
+        const slotLocalAge = shiftedTime - eventIndex * slotLength;
+        const enabled = hash11(eventIndex * 5.73 + fi * 19.17) <= eruptionChance ? 1 : 0;
+        if (!enabled) continue;
+
+        const startDelay = 0.06 + hash11(eventIndex * 3.11 + fi * 7.77) * 0.20;
+        const eventAge = slotLocalAge - startDelay;
+        const historyFade = 1 - smoothstep(slotLength * 2.30, slotLength * 2.88, Math.max(eventAge, 0));
+        const engage = smoothstep(-0.28, 0.05, eventAge);
+        const release = 1 - smoothstep(flightDuration * 0.72, flightDuration * 1.18, eventAge);
+        const strength = historyFade * engage * release;
+        if (strength <= 0.001) continue;
+
+        events.push({
+          t: orbitEventT(eventIndex + fi * 9.17, fi),
+          strength,
+        });
+      }
+    }
+
+    return events;
+  }
+
+  private orbitEventWeight(t: number, events: ActiveOrbitEvent[], width: number) {
+    let weight = 0;
+    const safeWidth = Math.max(width, 0.005);
+    for (const event of events) {
+      const rawDistance = Math.abs(t - event.t);
+      const distance = Math.min(rawDistance, 1 - rawDistance);
+      const local = (1 - smoothstep(0, safeWidth, distance)) * event.strength;
+      weight = Math.max(weight, local);
+    }
+    return weight;
+  }
+
+  private updateOrbitTube(elapsedSeconds: number) {
+    if (!this.orbitPositionAttribute || !this.orbitColorAttribute) return;
+
+    const positions = this.orbitPositionAttribute.array as Float32Array;
+    const colors = this.orbitColorAttribute.array as Float32Array;
+    const radius = Number(this.uniforms.uOrbitRadius?.value ?? 2.15);
+    const pulse = Number(this.uniforms.uOrbitPulse?.value ?? 0.035);
+    const rotationSpeed = Number(this.uniforms.uOrbitRotationSpeed?.value ?? 1.0);
+    const thickness = Number(this.uniforms.uOrbitThickness?.value ?? 0.006);
+    const pullStrength = Number(this.uniforms.uOrbitPullStrength?.value ?? 0.9);
+    const influenceWidth = Number(this.uniforms.uOrbitInfluenceWidth?.value ?? 0.11);
+    const highlightStrength = Number(this.uniforms.uOrbitHighlightStrength?.value ?? 1.5);
+    const orbitColor = this.uniforms.uOrbitLineColor?.value as THREE.Color | undefined;
+    const brightness = Number(this.uniforms.uOrbitLineBrightness?.value ?? 2.25);
+    const rotationAngle = elapsedSeconds * 0.18 * rotationSpeed;
+    const events = this.collectActiveOrbitEvents(elapsedSeconds);
+
+    const dir = new THREE.Vector3();
+    const previous = new THREE.Vector3();
+    const next = new THREE.Vector3();
+    const tangent = new THREE.Vector3();
+    const frameNormal = new THREE.Vector3();
+    const frameBinormal = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    const vertex = new THREE.Vector3();
+
+    const baseR = (orbitColor?.r ?? 1) * brightness;
+    const baseG = (orbitColor?.g ?? 1) * brightness;
+    const baseB = (orbitColor?.b ?? 1) * brightness;
+
+    for (let segment = 0; segment < ORBIT_SEGMENTS; segment += 1) {
+      const t = segment / ORBIT_SEGMENTS;
+      const eventWeight = this.orbitEventWeight(t, events, influenceWidth);
+      const localPulse = 1 + pulse * Math.sin(elapsedSeconds * 0.72 + t * TAU * 3.0);
+      const normalRadius = radius * localPulse;
+      const pullAmount = THREE.MathUtils.clamp(eventWeight * pullStrength, 0, 0.96);
+      const localRadius = THREE.MathUtils.lerp(normalRadius, ORBIT_SHELL_TARGET_RADIUS, pullAmount);
+
+      sampleOrbitDirection(t, rotationAngle, dir);
+      sampleOrbitDirection(t - 0.0015, rotationAngle, previous);
+      sampleOrbitDirection(t + 0.0015, rotationAngle, next);
+      tangent.subVectors(next, previous);
+      tangent.addScaledVector(dir, -tangent.dot(dir)).normalize();
+      frameBinormal.crossVectors(tangent, dir).normalize();
+      frameNormal.crossVectors(frameBinormal, tangent).normalize();
+      center.copy(dir).multiplyScalar(localRadius);
+
+      const highlight = Math.min(1 + highlightStrength * eventWeight, 4.0);
+      const localThickness = thickness * (1 + 0.12 * eventWeight);
+
+      for (let side = 0; side < ORBIT_SIDES; side += 1) {
+        const angle = (side / ORBIT_SIDES) * TAU;
+        vertex.copy(center)
+          .addScaledVector(frameNormal, Math.cos(angle) * localThickness)
+          .addScaledVector(frameBinormal, Math.sin(angle) * localThickness);
+
+        const vertexIndex = segment * ORBIT_SIDES + side;
+        const offset = vertexIndex * 3;
+        positions[offset] = vertex.x;
+        positions[offset + 1] = vertex.y;
+        positions[offset + 2] = vertex.z;
+        colors[offset] = baseR * highlight;
+        colors[offset + 1] = baseG * highlight;
+        colors[offset + 2] = baseB * highlight;
+      }
+    }
+
+    this.orbitPositionAttribute.needsUpdate = true;
+    this.orbitColorAttribute.needsUpdate = true;
   }
 
   resize(width: number, height: number, pixelRatio: number) {
@@ -154,6 +343,7 @@ export class ParticleWebGL2Backend implements RendererBackend {
   }
 
   setPointer(_x: number, _y: number) {}
+
   setPointerState(state: PointerState) {
     this.pointerDown = state.down;
     if (!state.down) return;
@@ -169,20 +359,15 @@ export class ParticleWebGL2Backend implements RendererBackend {
       if (config.type === 'color') (uniform.value as THREE.Color).set(String(next));
       else uniform.value = next;
     });
+
     if (this.geometry) {
       const requested = Number(values.uParticleCount ?? 10000);
       const mobile = matchMedia('(pointer: coarse)').matches;
       this.geometry.instanceCount = THREE.MathUtils.clamp(Math.floor(requested), 1000, mobile ? 120000 : 240000);
     }
-    if (this.orbitLines.length) {
-      const base = new THREE.Color(String(values.uOrbitLineColor ?? '#ffffff'));
-      const brightness = Number(values.uOrbitLineBrightness ?? 2.2);
-      const opacity = Number(values.uOrbitLineOpacity ?? 0.82);
-      for (const line of this.orbitLines) {
-        const mat = line.material as THREE.LineBasicMaterial;
-        mat.color.copy(base).multiplyScalar(brightness);
-        mat.opacity = line.userData.halo ? opacity * 0.22 : opacity;
-      }
+
+    if (this.orbitMaterial) {
+      this.orbitMaterial.opacity = Number(values.uOrbitLineOpacity ?? this.uniforms.uOrbitLineOpacity?.value ?? 0.88);
     }
   }
 
@@ -190,8 +375,12 @@ export class ParticleWebGL2Backend implements RendererBackend {
     if (!this.renderer || !this.scene || !this.camera) return;
     this.uniforms.uTime.value = elapsedSeconds;
     if (!this.pointerDown) this.yaw += 0.00055;
+
     const distance = Number(this.uniforms.uCameraDistance?.value ?? 6.15);
-    const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch), cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
+    const cp = Math.cos(this.pitch);
+    const sp = Math.sin(this.pitch);
+    const cy = Math.cos(this.yaw);
+    const sy = Math.sin(this.yaw);
     this.camera.position.set(distance * cp * sy, distance * sp, distance * cp * cy);
     this.camera.lookAt(0,0,0);
     this.camera.updateMatrixWorld();
@@ -200,28 +389,24 @@ export class ParticleWebGL2Backend implements RendererBackend {
     (this.uniforms.uCamRight.value as THREE.Vector3).set(e[0],e[1],e[2]);
     (this.uniforms.uCamUp.value as THREE.Vector3).set(e[4],e[5],e[6]);
 
-    if (this.orbitGroup) {
-      const speed = Number(this.uniforms.uOrbitRotationSpeed?.value ?? 1.0);
-      const radius = Number(this.uniforms.uOrbitRadius?.value ?? 2.15);
-      const pulse = Number(this.uniforms.uOrbitPulse?.value ?? 0.045);
-      this.orbitGroup.setRotationFromAxisAngle(ORBIT_AXIS, elapsedSeconds * 0.18 * speed);
-      for (const line of this.orbitLines) {
-        const s = radius * Number(line.userData.factor) * (1 + pulse * Math.sin(elapsedSeconds * 0.72 + Number(line.userData.phase)));
-        line.scale.setScalar(s);
-      }
-    }
+    if (this.orbitMesh) this.updateOrbitTube(elapsedSeconds);
     this.renderer.render(this.scene, this.camera);
   }
 
   getSurfaceInfo(): BackendSurfaceInfo {
-    return { width: this.width, height: this.height, drawCalls: this.renderer?.info.render.calls ?? 0, renderer: this.orbitGroup ? 'Three.js / Instanced Particles + Orbit Lines' : 'Three.js / Instanced WebGL2 Particles' };
+    return {
+      width: this.width,
+      height: this.height,
+      drawCalls: this.renderer?.info.render.calls ?? 0,
+      renderer: this.orbitMesh
+        ? 'Three.js / Instanced Particles + Continuous Tether Orbit'
+        : 'Three.js / Instanced WebGL2 Particles',
+    };
   }
 
   dispose() {
-    for (const line of this.orbitLines) {
-      line.geometry.dispose();
-      (line.material as THREE.Material).dispose();
-    }
+    this.orbitGeometry?.dispose();
+    this.orbitMaterial?.dispose();
     this.geometry?.dispose();
     this.material?.dispose();
     this.renderer?.dispose();
