@@ -191,9 +191,11 @@ export class ParticleWebGL2Backend implements RendererBackend {
     });
 
     if (this.geometry) {
-      const requested = Number(values.uParticleCount ?? 26000);
+      const requested = Number(values.uParticleCount ?? 48000);
       const mobile = matchMedia('(pointer: coarse)').matches;
-      const hardCap = mobile ? 36000 : 80000;
+      // The UI exposes up to 200k particles. Keep a safety margin on coarse-pointer/mobile
+      // devices while allowing high-end desktop GPUs to exceed the UI maximum for future presets.
+      const hardCap = mobile ? 120000 : 240000;
       this.geometry.instanceCount = THREE.MathUtils.clamp(Math.floor(requested), 1000, hardCap);
     }
   }
