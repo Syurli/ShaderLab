@@ -6,6 +6,8 @@ import sdfSphereFragment from '../experiments/raymarch/sdf-sphere/shader.frag?ra
 import basicVolumeFragment from '../experiments/volume/basic-volume/shader.frag?raw';
 import chimneySmokeWGSL from '../experiments/volume/chimney-smoke/shader.wgsl?raw';
 import interactiveFluidGasWGSL from '../experiments/volume/interactive-fluid-gas/shader.wgsl?raw';
+import solarProminenceVertex from '../experiments/particles/solar-prominence/shader.vert?raw';
+import solarProminenceFragment from '../experiments/particles/solar-prominence/shader.frag?raw';
 
 // `active` is reserved by WGSL. Keep the source readable in the experiment file,
 // but sanitize the standalone identifier before metadata parsing and runtime compilation.
@@ -80,6 +82,22 @@ export const experiments: ExperimentDefinition[] = [
     backend: 'webgl2',
     languages: ['GLSL'],
     fragmentShader: basicVolumeFragment,
+  }),
+  defineExperiment({
+    id: 'solar-prominence',
+    title: { zh: '太阳日珥粒子弧', en: 'Solar Prominence Particle Arcs' },
+    description: {
+      zh: 'WebGL2 实例化粒子实验：球面沙砾缓慢差速旋转，多组随机喷发源把狭窄粒子束沿参数化磁弧抛出；外围只产生柔和波及，落地后通过阻尼振荡连续回归平静，避免粒子状态硬切换。核心轨迹数学可直接迁移到 HLSL。',
+      en: 'An instanced WebGL2 particle experiment with slow differential shell rotation, concurrent randomized narrow prominence filaments, smooth surrounding disturbance, and damped post-impact settling. The core trajectory math maps directly to HLSL.',
+    },
+    category: { zh: '粒子', en: 'Particles' },
+    tags: ['WebGL2', 'GLSL', 'Particles', 'Prominence', 'HLSL-portable'],
+    backend: 'particle-webgl2',
+    languages: ['GLSL'],
+    sourceFile: 'shader.frag',
+    maxPixelRatio: 1.25,
+    vertexShader: solarProminenceVertex,
+    fragmentShader: solarProminenceFragment,
   }),
   defineExperiment({
     id: 'chimney-smoke',
