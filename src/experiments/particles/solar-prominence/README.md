@@ -1,57 +1,57 @@
 # Solar Prominence Particle Arcs / 太阳日珥粒子弧
 
-一个面向 WebGL2 的实例化粒子实验。粒子围绕不可见球面缓慢差速旋转，多组独立事件在随机位置触发狭窄喷发束；喷发路径使用解析参数化弧线。球面粒子保持纯白，真正离开球面的粒子按离面距离映射为连续的阳光光谱彩虹色。
+一个面向 WebGL2 的实例化粒子实验。粒子围绕不可见球面缓慢差速旋转，多组独立事件在随机位置触发日珥喷发。当前版本进一步把基础球面改成大陆式不规则粒子占据：球面本身存在大块连续空洞，喷发源附近的现有球面粒子会被真实掀起，因此原位置会留下可见空缺，再在上升过程中向窄束收拢形成日珥。
 
-## 运动模型
+## 运动与形态模型
 
 - 基础球面：由 `gl_InstanceID` 的确定性 hash 生成均匀球面方向。
-- 喷发事件：4 个独立事件通道，每个通道同时保留当前事件与前两代历史事件。旧事件在离开历史窗口之前先连续衰减，因此提高喷射频率不会再让仍在飞行或回落的粒子突然跳回球面。
-- 条状源区：局部切线坐标中的窄 `across` 带 + 有限 `along` 长度，保持侧视时的细丝形态。
-- 喷射密度：`uEjectionDensity` 调整细条内部有多少粒子参与，不通过简单加宽喷射条来堆数量，因此不会轻易重新变成薄面。
-- 日珥轨迹：径向高度和切向位移都在 `p=0/1` 时严格归零，保证发射和落地位置连续。
-- 回落：落地后使用 `exp(-damping*t) * sin(frequency*t)` 的阻尼振动，初始位移严格为 0，再逐步振荡衰减。
-- 球面水波：喷发产生沿球面传播的波前。多个喷发波场可以互相干涉，使整个球面产生类似水面的持续起伏，而不只是在喷发点附近抖动。
-- 颜色：静止/球面粒子为纯白；离面喷射粒子按位移连续映射为高饱和彩虹光谱。
+- 大陆式镂空：在粒子的材质球面方向上计算低频混合方向场，形成连续岛屿、海湾与空洞；纹理会随球面一起旋转。
+- 喷发事件：4 个独立事件通道，每个通道保留当前事件和两代历史事件，避免高频参数下的时间槽闪切。
+- 源区掀开：喷发不再只移动一小撮细丝粒子，而是先从球面上选出更大的椭圆形源区，把其中真实存在的粒子整体抬起。
+- 日珥收束：被掀起的宽源区在上升阶段同时沿两个球面切线方向向中心线收拢，因此源区会明显镂空，但空中的结构仍收束成细长的三维日珥束，而不是一张薄面。
+- 连续回落：所有抛出、收束和侧向偏移都包含 `sin(PI*p)` 型包络，在 `p=0/1` 严格回到原球面位置；落地后再进行指数衰减的阻尼振动。
+- 球面波：喷发与落地会产生沿球面传播的水波式波前，多组波可叠加干涉；波只移动已有粒子，不会填补大陆式空洞。
+- 颜色：静止/波动球面粒子保持纯白；真正离开球面的粒子按离面距离映射为阳光散射式连续彩虹。
 
-## 主要参数
+## 当前默认预设
 
-### 喷发
+默认值按 2026-08-31 调试参数固化：
 
-- `uEruptionRate`：喷射频率。
-- `uEruptionChance`：每个时间槽实际发生喷发的概率。
-- `uInfluenceRadius`：喷发点附近的局部初始波及范围。
-- `uEjectionDensity`：细条内部参与喷射的粒子密度。
+- `uParticleCount = 18000`
+- `uEruptionRate = 4.5`
+- `uEruptionChance = 1.0`
+- `uInfluenceRadius = 0.9`
+- `uEjectionDensity = 4.0`
+- `uRibbonLength = 0.36`
+- `uRibbonWidth = 0.07`
+- `uArcHeight = 1.0`
+- `uArcLength = 0.95`
+- `uShapeRandomness = 1.0`
+- `uFlightDuration = 2.45`
+- `uRotationSpeed = 1.0`
+- `uReturnDamping = 1.55`
+- `uReturnFrequency = 1.05`
+- `uSurfaceWave = 0.075`
+- `uWaveRange = 2.0`
+- `uWaveSpeed = 0.5`
+- `uWaveDamping = 0.3`
+- `uParticleSize = 2.2`
 
-### 形状
+新增形态参数：
 
-- `uRibbonLength` / `uRibbonWidth`：真正被抛出的条状源区长度和宽度。
-- `uArcHeight` / `uArcLength`：日珥的高度与横向弧形展开。
-- `uShapeRandomness`：形态随机度与粒子发射时差。
-
-### 回落与球面波浪
-
-- `uFlightDuration`：一次完整抛出与回落的时长。
-- `uReturnDamping` / `uReturnFrequency`：落地后的阻尼和振动频率。
-- `uSurfaceWave`：整体球面波浪位移强度。
-- `uWaveRange`：波浪沿球面的传播范围，`2.0` 接近传播到球体对侧。
-- `uWaveSpeed`：波前传播速度。
-- `uWaveDamping`：全局波场随时间衰减的速度。
-
-### 性能与观察
-
-- `uParticleCount`：总粒子数量，参数面板最高 200,000；移动端后端安全上限 120,000，桌面后端安全上限 240,000。
-- `uParticleSize`：粒子视觉尺寸。
-- `uRotationSpeed`：球面缓慢差速旋转速度。
-- `uCameraDistance`：观察距离。
+- `uShellCoverage`：大陆式粒子区域覆盖率，降低会出现更多镂空。
+- `uShellPatternScale`：大陆/岛屿块状尺度。
+- `uSourceExcavation`：相对于条带尺寸，真正从球面被掀起的源区范围；越高源区空洞越明显。
 
 ## HLSL 迁移
 
-核心数学没有依赖 WebGL transform feedback 或 CPU 粒子状态，可直接迁移到 HLSL：
+核心数学仍然不依赖 WebGL transform feedback 或 CPU 粒子状态，可直接迁移到 HLSL：
 
 - `gl_InstanceID` → `SV_InstanceID`
 - GLSL `vec*` → HLSL `float*`
 - `mix` → `lerp`
 - `fract` → `frac`
-- `cross` / `dot` / `sin` / `smoothstep` 可直接对应
+- `cross` / `dot` / `sin` / `smoothstep` / `exp` 可直接对应
+- 低频大陆场、源区椭圆掩码、收束偏移、参数化日珥弧和球面传播波都只依赖解析数学
 
-事件历史、参数化弧线、阻尼振动和球面传播波都只依赖确定性数学；渲染层当前使用 camera-facing instanced quad，在 HLSL 中可用 `SV_VertexID + SV_InstanceID` 或实例化顶点数据实现同样结构。
+渲染层当前使用 camera-facing instanced quad；在 HLSL 中可用 `SV_VertexID + SV_InstanceID` 或实例化顶点数据实现同样结构。
