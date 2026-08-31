@@ -80,7 +80,6 @@ export class ParticleWebGL2Backend implements RendererBackend {
       vertexShader: this.experiment.vertexShader,
       fragmentShader: this.experiment.fragmentShader,
       uniforms: this.uniforms,
-      glslVersion: THREE.GLSL3,
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
