@@ -44,7 +44,8 @@ const TAU = Math.PI * 2;
 const ORBIT_AXIS = new THREE.Vector3(0.18, 1.0, 0.07).normalize();
 const ORBIT_SEGMENTS = 448;
 const ORBIT_SIDES = 4;
-const ORBIT_SHELL_TARGET_RADIUS = 1.14;
+// Active cutter segments are intentionally pulled below the 1.08 particle-shell radius.
+const ORBIT_SHELL_TARGET_RADIUS = 0.90;
 
 function fract(value: number) {
   return value - Math.floor(value);
@@ -66,8 +67,7 @@ function orbitEventT(eventId: number, lane: number) {
   return fract(hash11(eventId * 2.713 + lane * 13.17) + lane * 0.173);
 }
 
-// Must match orbitCurveDir() in solar-orbital-prominence/shader.vert.
-// The azimuth always advances, while several very slow incommensurate terms deform the path.
+// Must match orbitCurveDir() in particle experiment shaders.
 function sampleOrbitDirection(
   t: number,
   elapsedSeconds: number,
@@ -359,7 +359,8 @@ export class ParticleWebGL2Backend implements RendererBackend {
         + 0.31 * Math.sin(elapsedSeconds * 0.109 - t * TAU * 1.8 + 1.4)
         + 0.21 * Math.sin(elapsedSeconds * 0.047 + t * TAU * 0.63 + 2.6);
       const normalRadius = radius * (1 + pulse * irregularPulse);
-      const pullAmount = THREE.MathUtils.clamp(eventWeight * pullStrength * 0.48, 0, 0.48);
+      // Active cutter segments now pass through the physical shell instead of merely approaching it.
+      const pullAmount = THREE.MathUtils.clamp(eventWeight * pullStrength * 0.92, 0, 1);
       const localRadius = THREE.MathUtils.lerp(normalRadius, ORBIT_SHELL_TARGET_RADIUS, pullAmount);
 
       sampleOrbitDirection(t, elapsedSeconds, rotationSpeed, dir);
