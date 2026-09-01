@@ -11,7 +11,6 @@ uniform float uParticleCount;
 uniform float uFlareCount;
 uniform float uEruptionRate;
 uniform float uEruptionChance;
-uniform float uInfluenceRadius;
 uniform float uRibbonLength;
 uniform float uRibbonWidth;
 uniform float uEjectionDensity;
@@ -166,10 +165,12 @@ void main() {
   float sb = hash11(id * 8.711 + 9.2);
   float sc = hash11(id * 1.993 + 5.4);
   float baseR = 1.08;
+  float flareBudget = clamp(uFlareCount, 0.0, max(uParticleCount - 1000.0, 0.0));
+  float shellCount = max(uParticleCount - flareBudget, 1000.0);
 
-  // Extra large chromatic flare particles live after the shell instance range.
-  if (id >= uParticleCount) {
-    float flareId = id - uParticleCount;
+  // Reserve the last part of the instance range for large airborne chromatic flares.
+  if (id >= shellCount) {
+    float flareId = id - shellCount;
     float lane = mod(floor(flareId), 3.0);
     float history = mod(floor(flareId / 3.0), 2.0);
     float eventIndex;
@@ -288,7 +289,9 @@ void main() {
       float travelSign = mix(-1.0, 1.0, step(0.5, hash11(eventIndex * 8.2 + lane * 7.1)));
       float forward = uArcLength * (0.18 + 0.82 * p) * travelSign;
       float lift = uArcHeight * flame * mix(0.72, 1.18, sb);
-      float lateral = (sa - 0.5) * uRibbonWidth * (1.2 + 5.0 * scatterGrow) * uShapeRandomness;
+      float spectralSide = clamp(across / cutWidth, -1.0, 1.0);
+      float lateral = (sa - 0.5) * uRibbonWidth * (1.2 + 5.0 * scatterGrow) * uShapeRandomness
+        + spectralSide * uRibbonWidth * 0.72 * uDispersionSeparation * flame;
       float curl = sin(p * TAU * (0.82 + 0.75 * sc) + sa * TAU + eventIndex)
         * uRibbonWidth * (0.7 + 2.4 * p) * uShapeRandomness;
       float rejoin = smoothstep(0.82, 1.0, p);
@@ -301,8 +304,7 @@ void main() {
       plasmaVisual += travelMask * (0.45 + 0.55 * flame);
       cutVisual += cutPatch * cutEnvelope;
 
-      float signedCross = clamp(across / cutWidth, -1.0, 1.0);
-      float spectrumT = clamp(0.5 + signedCross * 0.47 + (sa - 0.5) * 0.08 + p * 0.08, 0.0, 1.0);
+      float spectrumT = clamp(0.5 + spectralSide * 0.47 + (sa - 0.5) * 0.08 + p * 0.08, 0.0, 1.0);
       vec3 spectrum = solarDispersion(spectrumT);
       spectrum = mix(vec3(1.0, 0.98, 0.90), spectrum, clamp(uProminenceSaturation, 0.0, 1.0));
       spectrum *= uProminenceBrightness;
