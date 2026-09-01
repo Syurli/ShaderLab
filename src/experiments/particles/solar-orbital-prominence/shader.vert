@@ -37,6 +37,9 @@ uniform float uProminenceHueSpan;
 uniform float uProminenceSaturation;
 uniform float uProminenceBrightness;
 uniform float uDispersionSeparation;
+uniform float uChromaticAberration;
+uniform float uChromaticThreshold;
+uniform float uChromaticGlow;
 uniform float uOrbitRotationSpeed;
 uniform float uOrbitPullStrength;
 
@@ -83,19 +86,18 @@ float shellField(vec3 p) {
   return f;
 }
 
-// One continuous orbital filament. Several incommensurate low-frequency terms make the line
-// breathe and drift irregularly while keeping the path closed and smooth at every instant.
+// Must match ParticleWebGL2Backend.sampleOrbitDirection().
 vec3 orbitCurveDir(float t) {
   float phase = TAU * fract(t);
-  float slowA = 0.11 * sin(uTime * 0.173) + 0.045 * sin(uTime * 0.071 + 1.37);
-  float slowB = 0.075 * sin(uTime * 0.113 + 2.1) + 0.035 * sin(uTime * 0.047 + 0.4);
-  float latitudeAmp = 0.38 + 0.035 * sin(uTime * 0.087) + 0.018 * sin(uTime * 0.031 + 1.8);
+  float driftA = 0.075 * sin(uTime * 0.137) + 0.031 * sin(uTime * 0.053 + 1.7);
+  float driftB = 0.052 * sin(uTime * 0.091 + 2.3) + 0.024 * sin(uTime * 0.039 + 0.6);
+  float latitudeAmp = 0.34 + 0.026 * sin(uTime * 0.071) + 0.014 * sin(uTime * 0.029 + 1.3);
   float azimuth = 2.0 * phase
-    + 0.026 * sin(4.0 * phase + 0.25 + slowA)
-    + 0.014 * sin(3.0 * phase - uTime * 0.061 + slowB);
-  float latitude = latitudeAmp * sin(3.0 * phase + 0.30 + slowA)
-    + 0.047 * sin(2.0 * phase + uTime * 0.097 + 0.8)
-    + 0.026 * sin(6.0 * phase - 0.45 + slowB);
+    + 0.020 * sin(3.0 * phase + driftA)
+    + 0.009 * sin(5.0 * phase - uTime * 0.043 + driftB);
+  float latitude = latitudeAmp * sin(3.0 * phase + 0.28 + driftA)
+    + 0.034 * sin(2.0 * phase + uTime * 0.067 + 0.7)
+    + 0.014 * sin(5.0 * phase - 0.4 + driftB);
   float cosLat = cos(latitude);
   vec3 p = vec3(
     cosLat * cos(azimuth),
@@ -103,9 +105,9 @@ vec3 orbitCurveDir(float t) {
     cosLat * sin(azimuth)
   );
   vec3 spinAxis = safeNorm(vec3(0.18, 1.0, 0.07));
-  float irregularSpin = uTime * 0.105 * uOrbitRotationSpeed
-    + 0.10 * sin(uTime * 0.083)
-    + 0.042 * sin(uTime * 0.037 + 1.1);
+  float irregularSpin = uTime * 0.082 * uOrbitRotationSpeed
+    + 0.075 * sin(uTime * 0.061)
+    + 0.028 * sin(uTime * 0.027 + 1.2);
   return safeNorm(rotateAxis(p, spinAxis, irregularSpin));
 }
 
@@ -132,25 +134,29 @@ void orbitFrame(float eventId, float lane, out vec3 radial, out vec3 tangent) {
 vec3 solarDispersion(float t) {
   t = clamp(t, 0.0, 1.0);
   vec3 warmWhite = vec3(1.00, 0.99, 0.96);
-  vec3 red = vec3(1.00, 0.015, 0.005);
-  vec3 orange = vec3(1.00, 0.24, 0.005);
-  vec3 gold = vec3(1.00, 0.92, 0.015);
-  vec3 green = vec3(0.04, 1.00, 0.16);
-  vec3 cyan = vec3(0.00, 0.98, 1.00);
-  vec3 blue = vec3(0.015, 0.12, 1.00);
-  vec3 violet = vec3(0.78, 0.015, 1.00);
+  vec3 red = vec3(1.00, 0.03, 0.01);
+  vec3 orange = vec3(1.00, 0.30, 0.01);
+  vec3 gold = vec3(1.00, 0.90, 0.03);
+  vec3 green = vec3(0.08, 1.00, 0.22);
+  vec3 cyan = vec3(0.02, 0.95, 1.00);
+  vec3 blue = vec3(0.04, 0.20, 1.00);
+  vec3 violet = vec3(0.75, 0.04, 1.00);
 
-  if (t < 0.06) return mix(warmWhite, red, t / 0.06);
-  if (t < 0.18) return mix(red, orange, (t - 0.06) / 0.12);
-  if (t < 0.32) return mix(orange, gold, (t - 0.18) / 0.14);
-  if (t < 0.47) return mix(gold, green, (t - 0.32) / 0.15);
-  if (t < 0.62) return mix(green, cyan, (t - 0.47) / 0.15);
-  if (t < 0.80) return mix(cyan, blue, (t - 0.62) / 0.18);
-  return mix(blue, violet, (t - 0.80) / 0.20);
+  if (t < 0.12) return mix(warmWhite, red, t / 0.12);
+  if (t < 0.27) return mix(red, orange, (t - 0.12) / 0.15);
+  if (t < 0.42) return mix(orange, gold, (t - 0.27) / 0.15);
+  if (t < 0.57) return mix(gold, green, (t - 0.42) / 0.15);
+  if (t < 0.72) return mix(green, cyan, (t - 0.57) / 0.15);
+  if (t < 0.87) return mix(cyan, blue, (t - 0.72) / 0.15);
+  return mix(blue, violet, (t - 0.87) / 0.13);
 }
 
 void main() {
-  float id = float(gl_InstanceID);
+  float baseCount = max(uParticleCount, 1.0);
+  float rawInstance = float(gl_InstanceID);
+  float spectralBand = floor(rawInstance / baseCount);
+  float id = mod(rawInstance, baseCount);
+
   float sa = hash11(id * 4.123 + 1.7);
   float sb = hash11(id * 8.711 + 9.2);
   float sc = hash11(id * 1.993 + 5.4);
@@ -169,8 +175,6 @@ void main() {
   float spinRate = mix(0.082, 0.052, latitude) * uRotationSpeed;
   dir = rotateAxis(dir, spinAxis, uTime * spinRate + (sa - 0.5) * 0.035);
 
-  // About one third smaller in diameter than the previous preset, leaving more room around the
-  // bright body for the orbital line and the detached chromatic prominences.
   float baseR = 1.08 + (sb - 0.5) * 0.020;
   vec3 eruptionOffset = vec3(0.0);
   vec3 surfaceShear = vec3(0.0);
@@ -180,6 +184,8 @@ void main() {
   float tractionVisual = 0.0;
   vec3 spectrumColorSum = vec3(0.0);
   float spectrumWeight = 0.0;
+  vec3 dominantDispersionDir = vec3(1.0, 0.0, 0.0);
+  float dominantDispersionStrength = 0.0;
 
   for (int i = 0; i < 3; ++i) {
     float fi = float(i);
@@ -210,13 +216,13 @@ void main() {
 
       float randomBend = (hash11(eventIndex * 13.7 + fi * 2.1) - 0.5) * uShapeRandomness;
       float centerLine = sin(along * mix(9.0, 14.0, sc) + eventIndex * 1.13 + fi)
-        * uRibbonWidth * (0.18 + 0.42 * uShapeRandomness)
-        + randomBend * uRibbonWidth * 0.34;
-      float strandOffset = (sa - 0.5) * uRibbonWidth * 0.18;
+        * uRibbonWidth * (0.16 + 0.34 * uShapeRandomness)
+        + randomBend * uRibbonWidth * 0.28;
+      float strandOffset = (sa - 0.5) * uRibbonWidth * 0.16;
       float crossDistance = abs(across - centerLine - strandOffset);
       float sourceWidth = max(uRibbonWidth * uSourceExcavation, 0.002);
       float sourceLength = max(uRibbonLength * uSourceExcavation, 0.004);
-      float raggedEdge = 1.0 + 0.10 * uShapeRandomness * sin(along * 22.0 + sc * 7.0 + eventIndex);
+      float raggedEdge = 1.0 + 0.08 * uShapeRandomness * sin(along * 22.0 + sc * 7.0 + eventIndex);
       float sourceAcross = 1.0 - smoothstep(sourceWidth * 0.72, sourceWidth, crossDistance * raggedEdge);
       float sourceAlong = 1.0 - smoothstep(sourceLength * 0.74, sourceLength, abs(along));
       float sourcePatch = sourceAcross * sourceAlong * shellVisibility;
@@ -264,30 +270,29 @@ void main() {
       float funnel = clamp(0.88 + 0.04 * uShapeRandomness + 0.03 * (uSourceExcavation - 1.0), 0.84, 0.96);
       vec3 gatherOffset = tangentB * (-(across - centerLine) * funnel * gather)
         + tangentA * (-along * 0.16 * gather);
-      vec3 tubeOffset = tangentB * ((sa - 0.5) * uRibbonWidth * 0.48 * arch);
+      vec3 tubeOffset = tangentB * ((sa - 0.5) * uRibbonWidth * 0.42 * arch);
       float travelMask = liftedSource * travelling;
 
       float signedCross = clamp((across - centerLine) / max(sourceWidth, 0.001), -1.0, 1.0);
       float crossCoord = signedCross * 0.5 + 0.5;
-      float edgeFringe = smoothstep(0.16, 0.74, abs(signedCross));
+      float edgeFringe = smoothstep(0.18, 0.70, abs(signedCross));
       float prismCoord = clamp(
-        uProminenceHueOffset
-        + (0.01 + 0.92 * crossCoord + 0.10 * p) * uProminenceHueSpan,
+        uProminenceHueOffset + (0.04 + 0.86 * crossCoord + 0.10 * p) * uProminenceHueSpan,
         0.0,
         1.0
       );
       vec3 localSpectrum = solarDispersion(prismCoord);
-      float chromaStrength = clamp(0.34 + 0.66 * edgeFringe, 0.0, 1.0)
+      float chromaStrength = clamp(0.22 + 0.55 * edgeFringe, 0.0, 1.0)
         * clamp(uProminenceSaturation, 0.0, 1.0);
       localSpectrum = mix(vec3(1.0, 0.995, 0.98), localSpectrum, chromaStrength);
       localSpectrum *= uProminenceBrightness;
 
-      // Strong real spatial spectrum separation. The post effect reinforces this again in screen
-      // space, so the reference-style RGB fringes remain visible even under additive blending.
-      float prismShiftAmount = (0.045 + 0.105 * arch)
+      // Keep the physical ribbon separation modest. The strong reference-like RGB fringe now comes
+      // from three localized spectral copies of ONLY the lifted prominence particles, never the shell.
+      float prismShiftAmount = (0.018 + 0.045 * arch)
         * uDispersionSeparation
         * (prismCoord - 0.5)
-        * (0.35 + 0.65 * edgeFringe);
+        * (0.30 + 0.70 * edgeFringe);
       vec3 prismShift = tangentB * prismShiftAmount;
 
       eruptionOffset += (
@@ -302,6 +307,12 @@ void main() {
       float localSpectrumWeight = travelMask * (0.52 + 0.48 * arch);
       spectrumColorSum += localSpectrum * localSpectrumWeight;
       spectrumWeight += localSpectrumWeight;
+
+      float localDominance = travelMask * (0.25 + 0.75 * arch);
+      if (localDominance > dominantDispersionStrength) {
+        dominantDispersionStrength = localDominance;
+        dominantDispersionDir = tangentB;
+      }
 
       float settleT = max(travelAge - flightDuration, 0.0);
       float settleEnvelope = exp(-uReturnDamping * settleT);
@@ -344,32 +355,67 @@ void main() {
   eruptionVisual = clamp(eruptionVisual, 0.0, 1.0);
   settlingVisual = clamp(settlingVisual, 0.0, 1.0);
   tractionVisual = clamp(tractionVisual, 0.0, 1.0);
+  dominantDispersionStrength = clamp(dominantDispersionStrength, 0.0, 1.0);
 
   vec3 world = dir * (baseR + surfaceResponse) + surfaceShear + eruptionOffset;
-
   float excursion = length(eruptionOffset);
   vec3 spectrum = spectrumWeight > 0.0001
     ? spectrumColorSum / spectrumWeight
     : vec3(1.0, 0.995, 0.98);
 
-  float spectralPresence = smoothstep(0.0006, 0.009, excursion)
-    * clamp(spectrumWeight * 3.1 + eruptionVisual * 1.15, 0.0, 1.0);
+  float spectralPresence = smoothstep(0.0008, 0.011, excursion)
+    * clamp(spectrumWeight * 2.8 + eruptionVisual * 1.1, 0.0, 1.0);
+  float ghostGate = smoothstep(clamp(uChromaticThreshold, 0.0, 0.95), 1.0, spectralPresence)
+    * dominantDispersionStrength;
+
   vec3 shellColor = uShellColor * uShellBrightness;
-  vec3 rootGlow = vec3(1.0, 0.98, 0.92) * tractionVisual * 0.38 * uProminenceBrightness;
-  vColor = mix(shellColor, spectrum, spectralPresence) + rootGlow;
+  vec3 rootGlow = vec3(1.0, 0.98, 0.92) * tractionVisual * 0.30 * uProminenceBrightness;
+
+  float isBase = 1.0 - step(0.5, spectralBand);
+  float isRed = step(0.5, spectralBand) * (1.0 - step(1.5, spectralBand));
+  float isGreen = step(1.5, spectralBand) * (1.0 - step(2.5, spectralBand));
+  float isBlue = step(2.5, spectralBand);
+
+  // Base copy stays white on the shell. Only real prominence pixels receive the subtle physical spectrum.
+  vec3 baseProminence = mix(vec3(1.0, 0.99, 0.96) * uProminenceBrightness, spectrum, 0.58);
+  vColor = mix(shellColor, baseProminence, spectralPresence) + rootGlow;
+
+  float ghostOffsetSign = -isRed + isBlue;
+  float greenMicroOffset = isGreen * 0.08;
+  float ghostSeparation = (0.028 + 0.050 * eruptionVisual)
+    * uDispersionSeparation
+    * max(uChromaticAberration, 0.0)
+    * ghostGate;
+  world += dominantDispersionDir * ghostOffsetSign * ghostSeparation;
+  world += uCamRight * (ghostOffsetSign + greenMicroOffset) * ghostSeparation * 0.22;
+
+  vec3 redColor = vec3(1.0, 0.025, 0.005);
+  vec3 greenColor = vec3(0.06, 1.0, 0.18);
+  vec3 blueColor = vec3(0.025, 0.22, 1.0);
+  vec3 ghostColor = redColor * isRed + greenColor * isGreen + blueColor * isBlue;
+  float ghostBand = clamp(isRed + isGreen + isBlue, 0.0, 1.0);
+  vColor = mix(vColor, ghostColor * uProminenceBrightness * max(uChromaticGlow, 0.0), ghostBand);
 
   float tw = 0.5 + 0.5 * sin(uTime * mix(1.8, 5.2, sb) + sa * 61.0);
-  vSpark = pow(tw, 10.0) * (0.24 + 0.62 * sc);
-  vAlpha = shellVisibility
-    * mix(0.34, 0.98, spectralPresence)
+  vSpark = pow(tw, 10.0) * (0.24 + 0.62 * sc) * mix(1.0, 0.45, ghostBand);
+
+  float baseAlpha = shellVisibility
+    * mix(0.38, 0.98, spectralPresence)
     * (0.82 + 0.18 * sb)
     * mix(1.0, 0.95, settlingVisual);
-  vSeed = sa;
+  float ghostAlpha = shellVisibility
+    * ghostGate
+    * (0.46 + 0.42 * eruptionVisual)
+    * (0.72 + 0.28 * sb)
+    * clamp(uChromaticGlow, 0.0, 2.0);
+  vAlpha = mix(baseAlpha, ghostAlpha, ghostBand);
+  vSeed = sa + spectralBand * 0.173;
 
-  float size = mix(0.0058, 0.0085, sb)
+  float size = mix(0.0056, 0.0081, sb)
     * uParticleSize
-    * mix(1.0, 1.18, spectralPresence)
-    * (1.0 + vSpark * 0.20);
+    * mix(1.0, 1.12, spectralPresence)
+    * mix(1.0, 0.92, ghostBand)
+    * (1.0 + vSpark * 0.18);
 
   vec3 billboard = world + (uCamRight * position.x + uCamUp * position.y) * size;
   gl_Position = uViewProj * vec4(billboard, 1.0);
