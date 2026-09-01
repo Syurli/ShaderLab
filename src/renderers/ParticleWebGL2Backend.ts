@@ -42,7 +42,7 @@ function validateShaderProgram(gl: WebGL2RenderingContext, vertexSource: string,
 
 const TAU = Math.PI * 2;
 const ORBIT_AXIS = new THREE.Vector3(0.18, 1.0, 0.07).normalize();
-const ORBIT_SEGMENTS = 448;
+const ORBIT_SEGMENTS = 512;
 const ORBIT_SIDES = 4;
 // Active cutter segments are intentionally pulled below the 1.08 particle-shell radius.
 const ORBIT_SHELL_TARGET_RADIUS = 0.90;
@@ -274,6 +274,7 @@ export class ParticleWebGL2Backend implements RendererBackend {
     const eruptionRate = Number(this.uniforms.uEruptionRate?.value ?? 1.7);
     const eruptionChance = Number(this.uniforms.uEruptionChance?.value ?? 0.78);
     const flightDuration = Math.max(Number(this.uniforms.uFlightDuration?.value ?? 2.1), 0.15);
+    const settleDuration = Math.max(0.70, flightDuration * 0.50);
 
     for (let lane = 0; lane < 3; lane += 1) {
       const fi = lane;
@@ -293,9 +294,13 @@ export class ParticleWebGL2Backend implements RendererBackend {
 
         const startDelay = 0.08 + hash11(eventIndex * 3.11 + fi * 7.77) * 0.24;
         const eventAge = slotLocalAge - startDelay;
-        const historyFade = 1 - smoothstep(slotLength * 2.15, slotLength * 2.70, Math.max(eventAge, 0));
-        const engage = smoothstep(-0.30, 0.08, eventAge);
-        const release = 1 - smoothstep(flightDuration * 0.74, flightDuration * 1.08, eventAge);
+        const historyFade = 1 - smoothstep(slotLength * 2.20, slotLength * 2.85, Math.max(eventAge, 0));
+        const engage = smoothstep(-0.38, 0.14, eventAge);
+        const release = 1 - smoothstep(
+          flightDuration * 0.68,
+          flightDuration + settleDuration * 0.32,
+          eventAge,
+        );
         const strength = historyFade * engage * release;
         if (strength <= 0.001) continue;
 
@@ -310,15 +315,16 @@ export class ParticleWebGL2Backend implements RendererBackend {
   }
 
   private orbitEventWeight(t: number, events: ActiveOrbitEvent[], width: number) {
-    let weight = 0;
+    let accumulated = 0;
     const safeWidth = Math.max(width, 0.005);
     for (const event of events) {
       const rawDistance = Math.abs(t - event.t);
       const distance = Math.min(rawDistance, 1 - rawDistance);
       const local = (1 - smoothstep(0, safeWidth, distance)) * event.strength;
-      weight = Math.max(weight, local);
+      accumulated += local;
     }
-    return weight;
+    // Smooth-union overlapping event segments instead of switching abruptly via max().
+    return 1 - Math.exp(-2.5 * accumulated);
   }
 
   private updateOrbitTube(elapsedSeconds: number) {
@@ -359,8 +365,8 @@ export class ParticleWebGL2Backend implements RendererBackend {
         + 0.31 * Math.sin(elapsedSeconds * 0.109 - t * TAU * 1.8 + 1.4)
         + 0.21 * Math.sin(elapsedSeconds * 0.047 + t * TAU * 0.63 + 2.6);
       const normalRadius = radius * (1 + pulse * irregularPulse);
-      // Active cutter segments now pass through the physical shell instead of merely approaching it.
-      const pullAmount = THREE.MathUtils.clamp(eventWeight * pullStrength * 0.92, 0, 1);
+      const easedEventWeight = eventWeight * eventWeight * (3 - 2 * eventWeight);
+      const pullAmount = THREE.MathUtils.clamp(easedEventWeight * pullStrength * 0.98, 0, 1);
       const localRadius = THREE.MathUtils.lerp(normalRadius, ORBIT_SHELL_TARGET_RADIUS, pullAmount);
 
       sampleOrbitDirection(t, elapsedSeconds, rotationSpeed, dir);
