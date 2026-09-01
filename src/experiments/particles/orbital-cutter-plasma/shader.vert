@@ -140,6 +140,20 @@ vec3 solarDispersion(float t) {
   return mix(blue, violet, (t - 0.84) / 0.16);
 }
 
+vec3 rgbPrimary(float band) {
+  if (band < 0.5) return vec3(1.00, 0.025, 0.010);
+  if (band < 1.5) return vec3(0.025, 1.00, 0.055);
+  return vec3(0.015, 0.12, 1.00);
+}
+
+float pointSegmentDistance(vec3 p, vec3 a, vec3 b, out float segmentT) {
+  vec3 ab = b - a;
+  float denom = max(dot(ab, ab), 0.000001);
+  segmentT = clamp(dot(p - a, ab) / denom, 0.0, 1.0);
+  vec3 nearestPoint = a + ab * segmentT;
+  return length(p - nearestPoint);
+}
+
 void eventTiming(float lane, float history, out float eventIndex, out float eventAge, out float enabled) {
   float randomPeriod = mix(4.2, 5.8, hash11(lane * 41.7 + 3.1));
   float slotLength = max(randomPeriod / max(uEruptionRate, 0.15), max(uFlightDuration * 0.78, 0.70));
@@ -151,6 +165,50 @@ void eventTiming(float lane, float history, out float eventIndex, out float even
   float startDelay = 0.08 + hash11(eventIndex * 3.11 + lane * 7.77) * 0.24;
   eventAge = slotLocalAge - startDelay;
   enabled *= 1.0 - smoothstep(slotLength * 2.05, slotLength * 2.55, max(eventAge, 0.0));
+}
+
+void samplePlasmaTrajectory(
+  vec3 radial,
+  vec3 tangentA,
+  vec3 tangentB,
+  float sourceAlong,
+  float sourceAcross,
+  float seed0,
+  float seed1,
+  float seed2,
+  float eventIndex,
+  float lane,
+  float p,
+  float travelSign,
+  float rgbBand,
+  out vec3 offset,
+  out float flame,
+  out float spectrumT
+) {
+  flame = pow(max(sin(p * PI), 0.0), 0.78) * (1.0 - 0.18 * p);
+  float scatterGrow = p * p;
+  float forward = uArcLength * (0.14 + 0.86 * p) * travelSign;
+  forward += sourceAlong * mix(0.20, 0.04, p);
+  float lift = uArcHeight * flame * mix(0.72, 1.18, seed1);
+
+  float rgbCentered = rgbBand - 1.0;
+  float sourceSide = sourceAcross * uRibbonWidth * 0.78 * uDispersionSeparation * flame;
+  float rgbSplit = rgbCentered * uRibbonWidth * 1.20 * uDispersionSeparation
+    * flame * (0.38 + 0.82 * p);
+  float randomSide = (seed0 - 0.5) * uRibbonWidth
+    * (0.95 + 4.6 * scatterGrow) * uShapeRandomness;
+  float curl = sin(p * TAU * (0.82 + 0.75 * seed2) + seed0 * TAU + eventIndex + lane * 0.61)
+    * uRibbonWidth * (0.72 + 2.5 * p) * uShapeRandomness;
+
+  offset = radial * lift
+    + tangentA * forward
+    + tangentB * (sourceSide + rgbSplit + randomSide + curl);
+
+  spectrumT = clamp(
+    0.5 + sourceAcross * 0.42 + rgbCentered * 0.085 + (seed2 - 0.5) * 0.08 + p * 0.05,
+    0.0,
+    1.0
+  );
 }
 
 void placeBillboard(vec3 world, float size) {
@@ -168,7 +226,7 @@ void main() {
   float flareBudget = clamp(uFlareCount, 0.0, max(uParticleCount - 1000.0, 0.0));
   float shellCount = max(uParticleCount - flareBudget, 1000.0);
 
-  // Reserve the last part of the instance range for large airborne chromatic flares.
+  // Large chromatic flares reuse exactly the same event timing and trajectory family as stripped shell particles.
   if (id >= shellCount) {
     float flareId = id - shellCount;
     float lane = mod(floor(flareId), 3.0);
@@ -178,37 +236,72 @@ void main() {
     float enabled;
     eventTiming(lane, history, eventIndex, eventAge, enabled);
 
-    float life = max(uFlightDuration * 1.12, 0.4);
+    float life = max(uFlightDuration, 0.4);
     float p = clamp(eventAge / life, 0.0, 1.0);
-    float alive = enabled * step(0.0, eventAge) * step(eventAge, life);
-    float fade = 1.0 - smoothstep(0.58, 1.0, p);
+    float eventAlive = enabled * step(0.0, eventAge) * step(eventAge, life);
+    float fade = 1.0 - smoothstep(0.62, 1.0, p);
+    float cutEnvelope = enabled
+      * smoothstep(-0.18, 0.04, eventAge)
+      * (1.0 - smoothstep(life * 0.78, life * 1.10, eventAge));
 
-    vec3 emitDir;
+    vec3 cutDir;
     vec3 tangentA;
-    orbitFrame(eventIndex + lane * 9.17, lane, emitDir, tangentA);
-    vec3 tangentB = safeNorm(cross(tangentA, emitDir));
+    orbitFrame(eventIndex + lane * 9.17, lane, cutDir, tangentA);
+    vec3 tangentB = safeNorm(cross(tangentA, cutDir));
+
+    float penetration = 0.04 + 0.16 * clamp(uOrbitPullStrength, 0.0, 1.2) * cutEnvelope;
+    float cutterRadius = baseR + 0.055 - penetration;
+    float intersectionHalf = sqrt(max(baseR * baseR - cutterRadius * cutterRadius, 0.0));
 
     float rf0 = hash11(flareId * 3.17 + 1.1);
     float rf1 = hash11(flareId * 7.31 + 4.7);
     float rf2 = hash11(flareId * 11.7 + 8.2);
-    float plume = pow(max(sin(p * PI), 0.0), 0.72);
-    float forward = uArcLength * (0.12 + p * 0.88) * mix(0.35, 1.0, rf0);
-    float lift = uArcHeight * plume * mix(0.45, 1.18, rf1);
-    float swirl = sin(p * TAU * mix(0.7, 1.6, rf1) + rf2 * TAU) * uFlareSpread;
-    float side = (rf0 - 0.5) * uFlareSpread * (0.35 + 1.8 * p);
+    float rootSign = mix(-1.0, 1.0, step(0.5, rf0));
+    float rootAlong = rootSign * intersectionHalf * mix(0.78, 1.0, rf1);
+    vec3 rootPos = cutDir * cutterRadius + tangentA * rootAlong;
+    vec3 rootDir = safeNorm(rootPos);
+    tangentA = safeNorm(tangentA - rootDir * dot(tangentA, rootDir));
+    tangentB = safeNorm(cross(tangentA, rootDir));
 
-    vec3 world = emitDir * (baseR + 0.045 + lift)
-      + tangentA * (forward + swirl * 0.34)
-      + tangentB * (side + swirl * 0.22);
+    float rgbBand = mod(floor(flareId), 3.0);
+    float sourceAcross = (rf1 - 0.5) * min(uFlareSpread * 2.0, 0.90);
+    float travelSign = mix(-1.0, 1.0, step(0.5, hash11(eventIndex * 8.2 + lane * 7.1)));
+    vec3 plumeOffset;
+    float flame;
+    float spectrumT;
+    samplePlasmaTrajectory(
+      rootDir,
+      tangentA,
+      tangentB,
+      rootAlong,
+      sourceAcross,
+      rf0,
+      rf1,
+      rf2,
+      eventIndex,
+      lane,
+      p,
+      travelSign,
+      rgbBand,
+      plumeOffset,
+      flame,
+      spectrumT
+    );
 
-    float spectrumT = fract(rf0 * 0.72 + rf1 * 0.28 + p * 0.16);
+    // Keep the large sprites embedded in the same plume instead of spawning a separate cloud.
+    vec3 world = rootPos + plumeOffset
+      + tangentB * (rf2 - 0.5) * uFlareSpread * 0.16 * flame
+      + tangentA * (rf1 - 0.5) * uFlareSpread * 0.07 * flame;
+
     vec3 spectrum = solarDispersion(spectrumT);
+    vec3 primary = rgbPrimary(rgbBand);
+    spectrum = mix(spectrum, primary, 0.58 + 0.24 * flame);
     vColor = spectrum * uFlareBrightness;
-    vAlpha = alive * fade * mix(0.30, 0.86, rf2);
-    vSpark = 0.7 + 0.3 * sin(uTime * 3.0 + rf1 * 12.0);
+    vAlpha = eventAlive * cutEnvelope * fade * mix(0.32, 0.84, rf2);
+    vSpark = 0.72 + 0.28 * sin(uTime * 3.0 + rf1 * 12.0);
     vFlare = 1.0;
     vSeed = rf2;
-    float size = mix(0.038, 0.095, rf1) * uFlareSize * (0.72 + 0.65 * plume);
+    float size = mix(0.035, 0.082, rf1) * uFlareSize * (0.70 + 0.62 * flame);
     if (vAlpha < 0.001) {
       gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
       vUv = position.xy;
@@ -239,6 +332,7 @@ void main() {
   float cutVisual = 0.0;
   vec3 spectrumSum = vec3(0.0);
   float spectrumWeight = 0.0;
+  vec3 shellPos = dir * baseR;
 
   for (int i = 0; i < 3; ++i) {
     float lane = float(i);
@@ -249,33 +343,42 @@ void main() {
       float enabled;
       eventTiming(lane, history, eventIndex, eventAge, enabled);
 
+      float life = max(uFlightDuration, 0.25);
+      float p = clamp(eventAge / life, 0.0, 1.0);
+      float eventAlive = enabled * step(0.0, eventAge) * step(eventAge, life);
+      float cutEnvelope = enabled
+        * smoothstep(-0.18, 0.04, eventAge)
+        * (1.0 - smoothstep(life * 0.78, life * 1.10, eventAge));
+
       vec3 cutDir;
       vec3 tangentA;
       orbitFrame(eventIndex + lane * 9.17, lane, cutDir, tangentA);
       vec3 tangentB = safeNorm(cross(tangentA, cutDir));
 
-      float facing = dot(dir, cutDir);
-      float along = dot(dir, tangentA);
-      float across = dot(dir, tangentB);
-      float cutLength = max(uRibbonLength * uSourceExcavation, 0.01);
-      float cutWidth = max(uRibbonWidth * uSourceExcavation, 0.003);
-      float segmentAlong = 1.0 - smoothstep(cutLength * 0.72, cutLength, abs(along));
-      float ragged = 1.0 + 0.18 * uShapeRandomness * sin(along * 27.0 + sc * 6.0 + eventIndex);
-      float segmentAcross = 1.0 - smoothstep(cutWidth * 0.70, cutWidth, abs(across) * ragged);
-      float contact = smoothstep(0.70, 0.997, facing);
-      float cutPatch = segmentAlong * segmentAcross * contact * shellVisibility;
+      // Build an actual 3D cutter chord. During an event the orbit center is pushed below the shell radius.
+      float penetration = 0.04 + 0.16 * clamp(uOrbitPullStrength, 0.0, 1.2) * cutEnvelope;
+      float cutterRadius = baseR + 0.055 - penetration;
+      float cutHalfLength = max(uRibbonLength * uSourceExcavation * baseR * 1.35, 0.08);
+      float cutHalfWidth = max(uRibbonWidth * uSourceExcavation * baseR, 0.004);
+      vec3 cutCenter = cutDir * cutterRadius;
+      vec3 segmentA = cutCenter - tangentA * cutHalfLength;
+      vec3 segmentB = cutCenter + tangentA * cutHalfLength;
 
-      float life = max(uFlightDuration, 0.25);
-      float p = clamp(eventAge / life, 0.0, 1.0);
-      float eventActive = enabled * step(0.0, eventAge) * step(eventAge, life);
-      float cutEnvelope = enabled
-        * smoothstep(-0.18, 0.04, eventAge)
-        * (1.0 - smoothstep(life * 0.78, life * 1.10, eventAge));
+      float segmentT;
+      float cutDistance = pointSegmentDistance(shellPos, segmentA, segmentB, segmentT);
+      float cutCore = 1.0 - smoothstep(cutHalfWidth * 0.46, cutHalfWidth, cutDistance);
+      vec3 relativeToCut = shellPos - cutCenter;
+      float alongWorld = dot(relativeToCut, tangentA);
+      float acrossWorld = dot(relativeToCut, tangentB);
+      float sourceAcross = clamp(acrossWorld / max(cutHalfWidth, 0.0001), -1.0, 1.0);
+      float ragged = 0.88 + 0.12 * sin(alongWorld * 35.0 + sc * 6.0 + eventIndex);
+      float geometricCut = cutCore * ragged * shellVisibility;
+      float cutPatch = geometricCut * cutEnvelope;
 
       float filamentNoise = clamp(
         0.62
-        + 0.22 * sin(along * 37.0 + sa * 4.0 + eventIndex)
-        + 0.16 * sin(across * 81.0 - sc * 5.0 - lane),
+        + 0.22 * sin(alongWorld * 31.0 + sa * 4.0 + eventIndex)
+        + 0.16 * sin(acrossWorld * 75.0 - sc * 5.0 - lane),
         0.0,
         1.0
       );
@@ -284,45 +387,56 @@ void main() {
       float densityMask = smoothstep(densityThreshold, min(densityThreshold + 0.18, 0.98), filamentNoise);
       float detached = cutPatch * densityMask;
 
-      float flame = pow(max(sin(p * PI), 0.0), 0.78) * (1.0 - 0.18 * p);
-      float scatterGrow = p * p;
       float travelSign = mix(-1.0, 1.0, step(0.5, hash11(eventIndex * 8.2 + lane * 7.1)));
-      float forward = uArcLength * (0.18 + 0.82 * p) * travelSign;
-      float lift = uArcHeight * flame * mix(0.72, 1.18, sb);
-      float spectralSide = clamp(across / cutWidth, -1.0, 1.0);
-      float lateral = (sa - 0.5) * uRibbonWidth * (1.2 + 5.0 * scatterGrow) * uShapeRandomness
-        + spectralSide * uRibbonWidth * 0.72 * uDispersionSeparation * flame;
-      float curl = sin(p * TAU * (0.82 + 0.75 * sc) + sa * TAU + eventIndex)
-        * uRibbonWidth * (0.7 + 2.4 * p) * uShapeRandomness;
-      float rejoin = smoothstep(0.82, 1.0, p);
-      float travelMask = detached * eventActive * (1.0 - rejoin);
+      float rgbBand = mod(floor(id), 3.0);
+      vec3 plumeOffset;
+      float flame;
+      float spectrumT;
+      samplePlasmaTrajectory(
+        dir,
+        tangentA,
+        tangentB,
+        alongWorld,
+        sourceAcross,
+        sa,
+        sb,
+        sc,
+        eventIndex,
+        lane,
+        p,
+        travelSign,
+        rgbBand,
+        plumeOffset,
+        flame,
+        spectrumT
+      );
 
-      vec3 plumeOffset = dir * lift
-        + tangentA * forward
-        + tangentB * (lateral + curl);
+      float rejoin = smoothstep(0.82, 1.0, p);
+      float travelMask = detached * eventAlive * (1.0 - rejoin);
       eruptionOffset += plumeOffset * travelMask;
       plasmaVisual += travelMask * (0.45 + 0.55 * flame);
-      cutVisual += cutPatch * cutEnvelope;
+      cutVisual += cutPatch;
 
-      float spectrumT = clamp(0.5 + spectralSide * 0.47 + (sa - 0.5) * 0.08 + p * 0.08, 0.0, 1.0);
+      // Preserve the old three-primary spatial split while keeping a continuous solar spectrum underneath it.
       vec3 spectrum = solarDispersion(spectrumT);
       spectrum = mix(vec3(1.0, 0.98, 0.90), spectrum, clamp(uProminenceSaturation, 0.0, 1.0));
+      vec3 primary = rgbPrimary(rgbBand);
+      spectrum = mix(spectrum, primary, (0.42 + 0.38 * flame) * clamp(uProminenceSaturation, 0.0, 1.0));
       spectrum *= uProminenceBrightness;
       float specWeight = travelMask * (0.42 + 0.58 * flame);
       spectrumSum += spectrum * specWeight;
       spectrumWeight += specWeight;
 
-      // The line cut launches a lateral surface ripple from the entire cutting segment, not from the center.
-      float excessAlong = max(abs(along) - cutLength, 0.0);
-      float segmentDistance = sqrt(excessAlong * excessAlong + across * across);
+      // Ripples originate from the physically intersecting line segment.
+      float segmentDistance = cutDistance;
       float waveAge = max(eventAge, 0.0);
       float front = waveAge * uWaveSpeed - segmentDistance;
       float reached = step(0.0, front);
       float rangeMask = 1.0 - smoothstep(uWaveRange * 0.78, uWaveRange, segmentDistance);
       float waveEnvelope = exp(-uWaveDamping * waveAge) * exp(-max(front, 0.0) * 0.12);
       float phase = front * (8.0 + 2.0 * uShapeRandomness)
-        + 0.55 * sin(along * 9.0 + lane * 1.3)
-        + 0.24 * sin(across * 17.0 - sc * 5.0);
+        + 0.52 * sin(alongWorld * 8.0 + lane * 1.3)
+        + 0.22 * sin(acrossWorld * 16.0 - sc * 5.0);
       float waveMask = enabled * step(0.0, eventAge) * reached * rangeMask * waveEnvelope;
       surfaceResponse += sin(phase) * waveMask * uSurfaceWave;
       surfaceShear += (
@@ -340,17 +454,17 @@ void main() {
   vec3 world = dir * (baseR + surfaceResponse) + surfaceShear + eruptionOffset;
   vec3 shellColor = uShellColor * uShellBrightness;
   vec3 plasmaColor = spectrumWeight > 0.0001 ? spectrumSum / spectrumWeight : vec3(1.0, 0.97, 0.88);
-  float hotRoot = cutVisual * (1.0 - plasmaVisual) * 0.42;
-  vColor = mix(shellColor, plasmaColor, plasmaVisual) + vec3(1.0, 0.86, 0.55) * hotRoot;
+  float hotRoot = cutVisual * (1.0 - plasmaVisual) * 0.52;
+  vColor = mix(shellColor, plasmaColor, plasmaVisual) + vec3(1.0, 0.78, 0.42) * hotRoot;
 
   float tw = 0.5 + 0.5 * sin(uTime * mix(1.7, 4.9, sb) + sa * 61.0);
-  vSpark = pow(tw, 10.0) * (0.22 + 0.58 * sc) + plasmaVisual * 0.35;
+  vSpark = pow(tw, 10.0) * (0.22 + 0.58 * sc) + plasmaVisual * 0.38;
   vFlare = 0.0;
   vSeed = sa;
 
-  // The actual cut source is absent because those same shell instances have been moved into the plume.
-  float shellPresence = shellVisibility * (1.0 - cutVisual * (0.70 + 0.30 * uOrbitPullStrength));
-  vAlpha = max(shellPresence * (0.40 + 0.16 * sb), plasmaVisual * (0.54 + 0.44 * sb));
+  // The cut is a real hole: particles intersected by the chord either leave with the plume or fade from the source strip.
+  float shellPresence = shellVisibility * (1.0 - cutVisual * (0.82 + 0.18 * clamp(uOrbitPullStrength, 0.0, 1.2)));
+  vAlpha = max(shellPresence * (0.40 + 0.16 * sb), plasmaVisual * (0.56 + 0.44 * sb));
 
   float size = mix(0.0055, 0.0082, sb)
     * uParticleSize
