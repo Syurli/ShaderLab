@@ -83,12 +83,19 @@ float shellField(vec3 p) {
   return f;
 }
 
-// Single closed orbital weave, deliberately reduced to two azimuth wraps and three latitude
-// lobes. This keeps the "one continuous atom line" idea but reads as only a few large arcs.
+// One continuous orbital filament. Several incommensurate low-frequency terms make the line
+// breathe and drift irregularly while keeping the path closed and smooth at every instant.
 vec3 orbitCurveDir(float t) {
   float phase = TAU * fract(t);
-  float azimuth = 2.0 * phase + 0.030 * sin(4.0 * phase + 0.25);
-  float latitude = 0.42 * sin(3.0 * phase + 0.30) + 0.040 * sin(6.0 * phase - 0.45);
+  float slowA = 0.11 * sin(uTime * 0.173) + 0.045 * sin(uTime * 0.071 + 1.37);
+  float slowB = 0.075 * sin(uTime * 0.113 + 2.1) + 0.035 * sin(uTime * 0.047 + 0.4);
+  float latitudeAmp = 0.38 + 0.035 * sin(uTime * 0.087) + 0.018 * sin(uTime * 0.031 + 1.8);
+  float azimuth = 2.0 * phase
+    + 0.026 * sin(4.0 * phase + 0.25 + slowA)
+    + 0.014 * sin(3.0 * phase - uTime * 0.061 + slowB);
+  float latitude = latitudeAmp * sin(3.0 * phase + 0.30 + slowA)
+    + 0.047 * sin(2.0 * phase + uTime * 0.097 + 0.8)
+    + 0.026 * sin(6.0 * phase - 0.45 + slowB);
   float cosLat = cos(latitude);
   vec3 p = vec3(
     cosLat * cos(azimuth),
@@ -96,7 +103,10 @@ vec3 orbitCurveDir(float t) {
     cosLat * sin(azimuth)
   );
   vec3 spinAxis = safeNorm(vec3(0.18, 1.0, 0.07));
-  return safeNorm(rotateAxis(p, spinAxis, uTime * 0.14 * uOrbitRotationSpeed));
+  float irregularSpin = uTime * 0.105 * uOrbitRotationSpeed
+    + 0.10 * sin(uTime * 0.083)
+    + 0.042 * sin(uTime * 0.037 + 1.1);
+  return safeNorm(rotateAxis(p, spinAxis, irregularSpin));
 }
 
 vec3 orbitCurveTangent(float t) {
@@ -122,21 +132,21 @@ void orbitFrame(float eventId, float lane, out vec3 radial, out vec3 tangent) {
 vec3 solarDispersion(float t) {
   t = clamp(t, 0.0, 1.0);
   vec3 warmWhite = vec3(1.00, 0.99, 0.96);
-  vec3 red = vec3(1.00, 0.035, 0.015);
-  vec3 orange = vec3(1.00, 0.30, 0.015);
-  vec3 gold = vec3(1.00, 0.86, 0.035);
-  vec3 green = vec3(0.10, 1.00, 0.24);
-  vec3 cyan = vec3(0.02, 0.96, 1.00);
-  vec3 blue = vec3(0.06, 0.22, 1.00);
-  vec3 violet = vec3(0.78, 0.06, 1.00);
+  vec3 red = vec3(1.00, 0.015, 0.005);
+  vec3 orange = vec3(1.00, 0.24, 0.005);
+  vec3 gold = vec3(1.00, 0.92, 0.015);
+  vec3 green = vec3(0.04, 1.00, 0.16);
+  vec3 cyan = vec3(0.00, 0.98, 1.00);
+  vec3 blue = vec3(0.015, 0.12, 1.00);
+  vec3 violet = vec3(0.78, 0.015, 1.00);
 
-  if (t < 0.07) return mix(warmWhite, red, t / 0.07);
-  if (t < 0.19) return mix(red, orange, (t - 0.07) / 0.12);
-  if (t < 0.33) return mix(orange, gold, (t - 0.19) / 0.14);
-  if (t < 0.48) return mix(gold, green, (t - 0.33) / 0.15);
-  if (t < 0.64) return mix(green, cyan, (t - 0.48) / 0.16);
-  if (t < 0.82) return mix(cyan, blue, (t - 0.64) / 0.18);
-  return mix(blue, violet, (t - 0.82) / 0.18);
+  if (t < 0.06) return mix(warmWhite, red, t / 0.06);
+  if (t < 0.18) return mix(red, orange, (t - 0.06) / 0.12);
+  if (t < 0.32) return mix(orange, gold, (t - 0.18) / 0.14);
+  if (t < 0.47) return mix(gold, green, (t - 0.32) / 0.15);
+  if (t < 0.62) return mix(green, cyan, (t - 0.47) / 0.15);
+  if (t < 0.80) return mix(cyan, blue, (t - 0.62) / 0.18);
+  return mix(blue, violet, (t - 0.80) / 0.20);
 }
 
 void main() {
@@ -159,7 +169,9 @@ void main() {
   float spinRate = mix(0.082, 0.052, latitude) * uRotationSpeed;
   dir = rotateAxis(dir, spinAxis, uTime * spinRate + (sa - 0.5) * 0.035);
 
-  float baseR = 1.62 + (sb - 0.5) * 0.026;
+  // About one third smaller in diameter than the previous preset, leaving more room around the
+  // bright body for the orbital line and the detached chromatic prominences.
+  float baseR = 1.08 + (sb - 0.5) * 0.020;
   vec3 eruptionOffset = vec3(0.0);
   vec3 surfaceShear = vec3(0.0);
   float eruptionVisual = 0.0;
@@ -214,8 +226,8 @@ void main() {
         * smoothstep(-0.26, 0.08, eventAge)
         * (1.0 - smoothstep(flightDuration * 0.74, flightDuration * 1.04, eventAge));
       float tractionMask = sourcePatch * tractionEnvelope;
-      vec3 tractionOffset = dir * (0.014 + uSurfaceWave * 0.30) * uOrbitPullStrength
-        + tangentA * 0.020 * uOrbitPullStrength;
+      vec3 tractionOffset = dir * (0.012 + uSurfaceWave * 0.24) * uOrbitPullStrength
+        + tangentA * 0.018 * uOrbitPullStrength;
       eruptionOffset += tractionOffset * tractionMask;
       tractionVisual += tractionMask;
 
@@ -239,7 +251,7 @@ void main() {
       float travelAge = eventAge - particleDelay;
       float p = clamp(travelAge / flightDuration, 0.0, 1.0);
       float travelling = enabled * step(0.0, travelAge) * step(travelAge, flightDuration);
-      float arch = pow(max(sin(p * PI), 0.0), 1.12);
+      float arch = pow(max(sin(p * PI), 0.0), 1.10);
       float asymmetry = 1.0 + (hash11(eventIndex * 9.31 + fi * 3.7) - 0.5) * 0.24 * uShapeRandomness;
       float peelProfile = mix(0.74, 1.0, 1.0 - smoothstep(0.0, sourceWidth, crossDistance));
       float height = uArcHeight * arch * asymmetry * peelProfile;
@@ -257,24 +269,25 @@ void main() {
 
       float signedCross = clamp((across - centerLine) / max(sourceWidth, 0.001), -1.0, 1.0);
       float crossCoord = signedCross * 0.5 + 0.5;
-      float edgeFringe = smoothstep(0.24, 0.82, abs(signedCross));
+      float edgeFringe = smoothstep(0.16, 0.74, abs(signedCross));
       float prismCoord = clamp(
         uProminenceHueOffset
-        + (0.02 + 0.90 * crossCoord + 0.08 * p) * uProminenceHueSpan,
+        + (0.01 + 0.92 * crossCoord + 0.10 * p) * uProminenceHueSpan,
         0.0,
         1.0
       );
       vec3 localSpectrum = solarDispersion(prismCoord);
-      float chromaStrength = edgeFringe * clamp(uProminenceSaturation, 0.0, 1.0);
-      localSpectrum = mix(vec3(1.0, 0.99, 0.965), localSpectrum, chromaStrength);
+      float chromaStrength = clamp(0.34 + 0.66 * edgeFringe, 0.0, 1.0)
+        * clamp(uProminenceSaturation, 0.0, 1.0);
+      localSpectrum = mix(vec3(1.0, 0.995, 0.98), localSpectrum, chromaStrength);
       localSpectrum *= uProminenceBrightness;
 
-      // Real spatial dispersion: different source-width positions are shifted sideways as the
-      // prominence lifts, creating visible red/green/blue fringes instead of only recoloring dots.
-      float prismShiftAmount = (0.030 + 0.055 * arch)
+      // Strong real spatial spectrum separation. The post effect reinforces this again in screen
+      // space, so the reference-style RGB fringes remain visible even under additive blending.
+      float prismShiftAmount = (0.045 + 0.105 * arch)
         * uDispersionSeparation
         * (prismCoord - 0.5)
-        * edgeFringe;
+        * (0.35 + 0.65 * edgeFringe);
       vec3 prismShift = tangentB * prismShiftAmount;
 
       eruptionOffset += (
@@ -286,7 +299,7 @@ void main() {
       ) * travelMask;
       eruptionVisual += travelMask * arch;
 
-      float localSpectrumWeight = travelMask * (0.42 + 0.58 * arch);
+      float localSpectrumWeight = travelMask * (0.52 + 0.48 * arch);
       spectrumColorSum += localSpectrum * localSpectrumWeight;
       spectrumWeight += localSpectrumWeight;
 
@@ -296,39 +309,38 @@ void main() {
       float residual = sin(settleT * uReturnFrequency * TAU) * settleEnvelope;
       float residualSide = sin(settleT * uReturnFrequency * TAU * 0.82) * settleEnvelope;
       float settleMask = liftedSource * settling;
-      eruptionOffset += dir * (residual * uSurfaceWave * 0.78 * settleMask)
-        + tangentA * (residualSide * uSurfaceWave * 0.20 * settleMask);
+      eruptionOffset += dir * (residual * uSurfaceWave * 0.72 * settleMask)
+        + tangentA * (residualSide * uSurfaceWave * 0.18 * settleMask);
       settlingVisual += settleMask * abs(residual);
 
-      // Broad membrane-like travelling folds, closer to the reference's torn shell than fine rings.
       float chordDistance = sqrt(max(0.0, 2.0 * (1.0 - clamp(facing, -1.0, 1.0))));
       float waveAge = max(eventAge, 0.0);
       float behindFront = waveAge * uWaveSpeed - chordDistance;
       float reached = step(0.0, behindFront);
       float rangeMask = 1.0 - smoothstep(uWaveRange * 0.80, uWaveRange, chordDistance);
       float waveEnvelope = exp(-uWaveDamping * waveAge) * exp(-max(behindFront, 0.0) * 0.08);
-      float detail = 8.0 + 3.0 * uShapeRandomness;
-      float phaseWarp = 0.34 * sin(along * detail * 0.72 + across * detail * 0.41 + fi * 1.13)
-        + 0.14 * sin((along - across) * detail * 1.35 + sc * 4.0);
+      float detail = 7.0 + 2.4 * uShapeRandomness;
+      float phaseWarp = 0.38 * sin(along * detail * 0.68 + across * detail * 0.43 + fi * 1.13)
+        + 0.16 * sin((along - across) * detail * 1.22 + sc * 4.0);
       float ringPhase = behindFront * detail + phaseWarp;
       float ring = sin(ringPhase) * waveEnvelope;
       float localKick = influence
-        * sin(waveAge * 3.1 - localRadius * detail * 0.92 + phaseWarp)
-        * exp(-waveAge * 0.62);
+        * sin(waveAge * 2.8 - localRadius * detail * 0.86 + phaseWarp)
+        * exp(-waveAge * 0.58);
       float waveMask = enabled * step(0.0, eventAge) * reached * rangeMask;
       surfaceResponse += waveMask * ring * uSurfaceWave
-        + enabled * step(0.0, eventAge) * localKick * uSurfaceWave * 0.46;
+        + enabled * step(0.0, eventAge) * localKick * uSurfaceWave * 0.44;
 
-      float shearStrength = waveMask * waveEnvelope * uSurfaceWave * (0.24 + 0.18 * uShapeRandomness);
+      float shearStrength = waveMask * waveEnvelope * uSurfaceWave * (0.22 + 0.18 * uShapeRandomness);
       surfaceShear += (
         tangentA * cos(ringPhase)
-        + tangentB * sin(ringPhase * 0.68 + fi)
+        + tangentB * sin(ringPhase * 0.67 + fi)
       ) * shearStrength;
     }
   }
 
-  surfaceResponse = clamp(surfaceResponse, -uSurfaceWave * 2.6, uSurfaceWave * 2.6);
-  surfaceShear = clamp(surfaceShear, vec3(-0.11), vec3(0.11));
+  surfaceResponse = clamp(surfaceResponse, -uSurfaceWave * 2.4, uSurfaceWave * 2.4);
+  surfaceShear = clamp(surfaceShear, vec3(-0.085), vec3(0.085));
   eruptionVisual = clamp(eruptionVisual, 0.0, 1.0);
   settlingVisual = clamp(settlingVisual, 0.0, 1.0);
   tractionVisual = clamp(tractionVisual, 0.0, 1.0);
@@ -338,26 +350,26 @@ void main() {
   float excursion = length(eruptionOffset);
   vec3 spectrum = spectrumWeight > 0.0001
     ? spectrumColorSum / spectrumWeight
-    : vec3(1.0, 0.99, 0.965);
+    : vec3(1.0, 0.995, 0.98);
 
-  float spectralPresence = smoothstep(0.001, 0.014, excursion)
-    * clamp(spectrumWeight * 2.6 + eruptionVisual * 1.05, 0.0, 1.0);
+  float spectralPresence = smoothstep(0.0006, 0.009, excursion)
+    * clamp(spectrumWeight * 3.1 + eruptionVisual * 1.15, 0.0, 1.0);
   vec3 shellColor = uShellColor * uShellBrightness;
-  vec3 rootGlow = vec3(1.0) * tractionVisual * 0.30 * uProminenceBrightness;
+  vec3 rootGlow = vec3(1.0, 0.98, 0.92) * tractionVisual * 0.38 * uProminenceBrightness;
   vColor = mix(shellColor, spectrum, spectralPresence) + rootGlow;
 
   float tw = 0.5 + 0.5 * sin(uTime * mix(1.8, 5.2, sb) + sa * 61.0);
-  vSpark = pow(tw, 10.0) * (0.22 + 0.58 * sc);
+  vSpark = pow(tw, 10.0) * (0.24 + 0.62 * sc);
   vAlpha = shellVisibility
-    * mix(0.24, 0.92, spectralPresence)
-    * (0.80 + 0.20 * sb)
+    * mix(0.34, 0.98, spectralPresence)
+    * (0.82 + 0.18 * sb)
     * mix(1.0, 0.95, settlingVisual);
   vSeed = sa;
 
-  float size = mix(0.0057, 0.0082, sb)
+  float size = mix(0.0058, 0.0085, sb)
     * uParticleSize
-    * mix(1.0, 1.12, spectralPresence)
-    * (1.0 + vSpark * 0.18);
+    * mix(1.0, 1.18, spectralPresence)
+    * (1.0 + vSpark * 0.20);
 
   vec3 billboard = world + (uCamRight * position.x + uCamUp * position.y) * size;
   gl_Position = uViewProj * vec4(billboard, 1.0);
