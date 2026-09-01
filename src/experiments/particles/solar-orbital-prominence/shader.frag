@@ -16,8 +16,8 @@ void main() {
   if (mask < 0.01) discard;
 
   float core = 1.0 - smoothstep(0.0, 0.62, r);
-  float sparkle = vSpark * pow(max(core, 0.0), 5.0) * 1.65;
-  vec3 color = vColor * (0.92 + 0.54 * core) + vec3(sparkle);
+  float sparkle = vSpark * pow(max(core, 0.0), 5.0) * 1.55;
+  vec3 color = vColor * (0.94 + 0.56 * core) + vec3(sparkle);
   outColor = vec4(color, mask * vAlpha * (0.86 + 0.14 * grain));
 }
 
@@ -26,69 +26,72 @@ void main() {
   "version": 1,
   "parameters": {
     "uParticleCount": {
-      "type": "int", "default": 34000, "min": 6000, "max": 200000, "step": 2000,
+      "type": "int", "default": 28000, "min": 6000, "max": 60000, "step": 2000,
       "label": { "zh": "粒子数量", "en": "Particle Count" },
-      "description": { "zh": "更小的中央球体使用更多细粒子维持连续高亮表面。", "en": "The smaller central body uses more fine grains to preserve a bright coherent surface." },
+      "description": { "zh": "轨道版本会为日珥额外绘制局部 RGB 色散副本；此数值表示基础球面粒子数。", "en": "The orbital version adds localized RGB prominence copies; this value is the base shell-particle count." },
       "group": { "zh": "性能", "en": "Performance" }
     },
     "uEruptionRate": {
-      "type": "float", "default": 2.1, "min": 0.25, "max": 4.5, "step": 0.05,
+      "type": "float", "default": 1.7, "min": 0.25, "max": 4.5, "step": 0.05,
       "label": { "zh": "喷射频率", "en": "Eruption Rate" },
+      "description": { "zh": "默认减少同时存在的喷发，避免参考图目标被大量离面粒子淹没。", "en": "The default reduces overlapping events so detached grains do not overwhelm the reference-like body." },
       "group": { "zh": "喷发", "en": "Eruption" }
     },
     "uEruptionChance": {
-      "type": "float", "default": 0.82, "min": 0.2, "max": 1.0, "step": 0.01,
+      "type": "float", "default": 0.78, "min": 0.2, "max": 1.0, "step": 0.01,
       "label": { "zh": "喷发概率", "en": "Eruption Chance" },
       "group": { "zh": "喷发", "en": "Eruption" }
     },
     "uInfluenceRadius": {
-      "type": "float", "default": 0.58, "min": 0.12, "max": 0.9, "step": 0.01,
+      "type": "float", "default": 0.50, "min": 0.12, "max": 0.9, "step": 0.01,
       "label": { "zh": "局部波及范围", "en": "Local Influence Radius" },
       "group": { "zh": "喷发", "en": "Eruption" }
     },
     "uEjectionDensity": {
-      "type": "float", "default": 3.4, "min": 0.5, "max": 4.0, "step": 0.05,
+      "type": "float", "default": 3.8, "min": 0.5, "max": 4.0, "step": 0.05,
       "label": { "zh": "喷射粒子密度", "en": "Ejection Density" },
+      "description": { "zh": "提高真正参与日珥的局部粒子密度，让 RGB 分离形成连续光边而不是零散彩点。", "en": "Raises local prominence density so RGB separation forms continuous fringes rather than isolated colored dots." },
       "group": { "zh": "喷发", "en": "Eruption" }
     },
     "uSourceExcavation": {
-      "type": "float", "default": 1.7, "min": 0.8, "max": 2.4, "step": 0.05,
+      "type": "float", "default": 1.6, "min": 0.8, "max": 2.4, "step": 0.05,
       "label": { "zh": "源区掀开范围", "en": "Source Excavation" },
       "group": { "zh": "喷发", "en": "Eruption" }
     },
     "uRibbonLength": {
-      "type": "float", "default": 0.26, "min": 0.045, "max": 0.36, "step": 0.005,
+      "type": "float", "default": 0.24, "min": 0.045, "max": 0.36, "step": 0.005,
       "label": { "zh": "喷射条长度", "en": "Ribbon Length" },
       "group": { "zh": "形状", "en": "Shape" }
     },
     "uRibbonWidth": {
-      "type": "float", "default": 0.038, "min": 0.006, "max": 0.07, "step": 0.001,
+      "type": "float", "default": 0.032, "min": 0.006, "max": 0.07, "step": 0.001,
       "label": { "zh": "喷射条宽度", "en": "Ribbon Width" },
+      "description": { "zh": "保持较窄的日珥束，让局部红绿蓝副本形成清晰色散边。", "en": "Keeps the prominence narrow so the local red/green/blue copies form crisp spectral fringes." },
       "group": { "zh": "形状", "en": "Shape" }
     },
     "uArcHeight": {
-      "type": "float", "default": 0.36, "min": 0.12, "max": 1.3, "step": 0.01,
+      "type": "float", "default": 0.34, "min": 0.12, "max": 1.3, "step": 0.01,
       "label": { "zh": "日珥高度", "en": "Arc Height" },
       "group": { "zh": "形状", "en": "Shape" }
     },
     "uArcLength": {
-      "type": "float", "default": 0.66, "min": 0.05, "max": 0.95, "step": 0.01,
+      "type": "float", "default": 0.58, "min": 0.05, "max": 0.95, "step": 0.01,
       "label": { "zh": "弧向展开", "en": "Arc Span" },
       "group": { "zh": "形状", "en": "Shape" }
     },
     "uShapeRandomness": {
-      "type": "float", "default": 0.68, "min": 0.0, "max": 1.0, "step": 0.01,
+      "type": "float", "default": 0.58, "min": 0.0, "max": 1.0, "step": 0.01,
       "label": { "zh": "形状随机度", "en": "Shape Randomness" },
       "group": { "zh": "形状", "en": "Shape" }
     },
     "uShellCoverage": {
-      "type": "float", "default": 0.70, "min": 0.25, "max": 0.95, "step": 0.01,
+      "type": "float", "default": 0.76, "min": 0.25, "max": 0.95, "step": 0.01,
       "label": { "zh": "球面覆盖率", "en": "Shell Coverage" },
-      "description": { "zh": "更高覆盖率让缩小后的主体保持接近参考图的明亮块面，同时仍保留明显孔洞。", "en": "Higher coverage keeps the reduced body bright and sheet-like while preserving large perforations." },
+      "description": { "zh": "让主体优先读成高亮白色颗粒壳，同时保留几块大的镂空。", "en": "Makes the body read first as a bright white grain shell while retaining several large holes." },
       "group": { "zh": "球面形态", "en": "Shell Pattern" }
     },
     "uShellPatternScale": {
-      "type": "float", "default": 0.95, "min": 0.45, "max": 2.5, "step": 0.05,
+      "type": "float", "default": 0.88, "min": 0.45, "max": 2.5, "step": 0.05,
       "label": { "zh": "大陆纹理尺度", "en": "Continent Scale" },
       "group": { "zh": "球面形态", "en": "Shell Pattern" }
     },
@@ -98,7 +101,7 @@ void main() {
       "group": { "zh": "运动", "en": "Motion" }
     },
     "uRotationSpeed": {
-      "type": "float", "default": 1.35, "min": 0.0, "max": 3.0, "step": 0.05,
+      "type": "float", "default": 1.20, "min": 0.0, "max": 3.0, "step": 0.05,
       "label": { "zh": "球面旋转速度", "en": "Shell Rotation" },
       "group": { "zh": "运动", "en": "Motion" }
     },
@@ -113,27 +116,27 @@ void main() {
       "group": { "zh": "回落", "en": "Return" }
     },
     "uSurfaceWave": {
-      "type": "float", "default": 0.07, "min": 0.0, "max": 0.4, "step": 0.005,
+      "type": "float", "default": 0.065, "min": 0.0, "max": 0.4, "step": 0.005,
       "label": { "zh": "球面波浪强度", "en": "Surface Wave Strength" },
       "group": { "zh": "球面波浪", "en": "Surface Waves" }
     },
     "uWaveRange": {
-      "type": "float", "default": 1.5, "min": 0.25, "max": 2.0, "step": 0.025,
+      "type": "float", "default": 1.45, "min": 0.25, "max": 2.0, "step": 0.025,
       "label": { "zh": "球面波传播范围", "en": "Wave Range" },
       "group": { "zh": "球面波浪", "en": "Surface Waves" }
     },
     "uWaveSpeed": {
-      "type": "float", "default": 0.72, "min": 0.25, "max": 4.0, "step": 0.05,
+      "type": "float", "default": 0.68, "min": 0.25, "max": 4.0, "step": 0.05,
       "label": { "zh": "球面波速度", "en": "Wave Speed" },
       "group": { "zh": "球面波浪", "en": "Surface Waves" }
     },
     "uWaveDamping": {
-      "type": "float", "default": 0.40, "min": 0.05, "max": 2.5, "step": 0.025,
+      "type": "float", "default": 0.42, "min": 0.05, "max": 2.5, "step": 0.025,
       "label": { "zh": "球面波衰减", "en": "Wave Damping" },
       "group": { "zh": "球面波浪", "en": "Surface Waves" }
     },
     "uParticleSize": {
-      "type": "float", "default": 0.76, "min": 0.35, "max": 2.2, "step": 0.05,
+      "type": "float", "default": 0.68, "min": 0.35, "max": 2.2, "step": 0.05,
       "label": { "zh": "粒子尺寸", "en": "Particle Size" },
       "group": { "zh": "外观", "en": "Appearance" }
     },
@@ -143,9 +146,9 @@ void main() {
       "group": { "zh": "颜色", "en": "Color" }
     },
     "uShellBrightness": {
-      "type": "float", "default": 3.20, "min": 0.2, "max": 5.0, "step": 0.05,
+      "type": "float", "default": 3.60, "min": 0.2, "max": 5.0, "step": 0.05,
       "label": { "zh": "球面亮度", "en": "Shell Brightness" },
-      "description": { "zh": "缩小主体后显著提高白色粒子的发光强度，使主体重新成为画面视觉中心。", "en": "Strongly boosts the white grains after shrinking the body so it remains the visual focus." },
+      "description": { "zh": "主体保持纯白高亮；局部 RGB 色散不会再污染球面。", "en": "Keeps the body bright white; localized RGB dispersion no longer contaminates the shell." },
       "group": { "zh": "颜色", "en": "Color" }
     },
     "uProminenceHueOffset": {
@@ -164,33 +167,33 @@ void main() {
       "group": { "zh": "色散", "en": "Dispersion" }
     },
     "uProminenceBrightness": {
-      "type": "float", "default": 3.25, "min": 0.2, "max": 5.0, "step": 0.05,
+      "type": "float", "default": 2.8, "min": 0.2, "max": 5.0, "step": 0.05,
       "label": { "zh": "日珥亮度", "en": "Prominence Brightness" },
       "group": { "zh": "色散", "en": "Dispersion" }
     },
     "uDispersionSeparation": {
-      "type": "float", "default": 1.85, "min": 0.0, "max": 3.0, "step": 0.05,
-      "label": { "zh": "粒子色散空间分离", "en": "Particle Spectrum Separation" },
-      "description": { "zh": "在三维轨迹中实际拉开不同波长粒子的位置。", "en": "Physically separates different spectral bands in the 3D prominence trajectory." },
+      "type": "float", "default": 1.35, "min": 0.0, "max": 3.0, "step": 0.05,
+      "label": { "zh": "日珥光谱宽度", "en": "Prominence Spectrum Width" },
+      "description": { "zh": "控制日珥内部的物理光谱展开，不会作用到静止球面。", "en": "Controls physical spectrum spread inside prominence ribbons only, never the resting shell." },
       "group": { "zh": "色散", "en": "Dispersion" }
     },
     "uChromaticAberration": {
-      "type": "float", "default": 8.5, "min": 0.0, "max": 20.0, "step": 0.5,
-      "label": { "zh": "后期色散强度", "en": "Post Chromatic Split" },
-      "description": { "zh": "屏幕空间额外分离红绿蓝通道，专门用于复现参考图中非常强的棱镜色边。单位近似为像素。", "en": "Adds an extra screen-space RGB channel split to reproduce the reference's strong prism fringes." },
-      "group": { "zh": "后期色散", "en": "Post Dispersion" }
+      "type": "float", "default": 1.25, "min": 0.0, "max": 3.0, "step": 0.05,
+      "label": { "zh": "局部 RGB 分离强度", "en": "Localized RGB Split" },
+      "description": { "zh": "不再是全屏后期。只复制真正离开球面的日珥粒子，并将红、绿、蓝三层局部错开。", "en": "No longer a full-screen post effect. Only true prominence particles receive locally offset red, green and blue copies." },
+      "group": { "zh": "局部色散", "en": "Localized Dispersion" }
     },
     "uChromaticThreshold": {
-      "type": "float", "default": 0.08, "min": 0.0, "max": 0.8, "step": 0.01,
-      "label": { "zh": "色散亮度阈值", "en": "Dispersion Luma Threshold" },
-      "description": { "zh": "降低会让更多白色轮廓和喷发边缘参与后期色散。", "en": "Lower values allow more bright shell and prominence edges to receive the post split." },
-      "group": { "zh": "后期色散", "en": "Post Dispersion" }
+      "type": "float", "default": 0.12, "min": 0.0, "max": 0.8, "step": 0.01,
+      "label": { "zh": "局部色散触发阈值", "en": "Local Split Threshold" },
+      "description": { "zh": "提高后只有更明确的日珥离面部分才生成 RGB 副本，可彻底避免球体染色。", "en": "Higher values restrict RGB copies to more clearly detached prominence regions and keep the shell clean." },
+      "group": { "zh": "局部色散", "en": "Localized Dispersion" }
     },
     "uChromaticGlow": {
-      "type": "float", "default": 0.85, "min": 0.0, "max": 2.0, "step": 0.05,
-      "label": { "zh": "色散光晕", "en": "Dispersion Glow" },
-      "description": { "zh": "加强红蓝分离边缘的辉光强度。", "en": "Boosts the luminous red/blue fringe around split highlights." },
-      "group": { "zh": "后期色散", "en": "Post Dispersion" }
+      "type": "float", "default": 1.15, "min": 0.0, "max": 2.0, "step": 0.05,
+      "label": { "zh": "RGB 色边亮度", "en": "RGB Fringe Brightness" },
+      "description": { "zh": "控制局部红绿蓝色边的亮度，而不会改变白色球面的亮度。", "en": "Controls localized RGB fringe brightness without changing the white shell." },
+      "group": { "zh": "局部色散", "en": "Localized Dispersion" }
     },
     "uOrbitLineColor": {
       "type": "color", "default": "#ffffff",
@@ -198,49 +201,50 @@ void main() {
       "group": { "zh": "牵引轨道", "en": "Tether Orbit" }
     },
     "uOrbitLineBrightness": {
-      "type": "float", "default": 0.78, "min": 0.2, "max": 4.0, "step": 0.05,
+      "type": "float", "default": 0.62, "min": 0.2, "max": 4.0, "step": 0.05,
       "label": { "zh": "轨道线亮度", "en": "Orbit Brightness" },
       "group": { "zh": "牵引轨道", "en": "Tether Orbit" }
     },
     "uOrbitLineOpacity": {
-      "type": "float", "default": 0.28, "min": 0.05, "max": 1.0, "step": 0.01,
+      "type": "float", "default": 0.22, "min": 0.05, "max": 1.0, "step": 0.01,
       "label": { "zh": "轨道线透明度", "en": "Orbit Opacity" },
       "group": { "zh": "牵引轨道", "en": "Tether Orbit" }
     },
     "uOrbitThickness": {
-      "type": "float", "default": 0.0014, "min": 0.0006, "max": 0.02, "step": 0.0001,
+      "type": "float", "default": 0.0009, "min": 0.0004, "max": 0.02, "step": 0.0001,
       "label": { "zh": "轨道线粗细", "en": "Orbit Thickness" },
+      "description": { "zh": "进一步压细轨道，使它更接近参考图的微弱光丝。", "en": "Further thins the orbit toward the reference's subtle filament-like line." },
       "group": { "zh": "牵引轨道", "en": "Tether Orbit" }
     },
     "uOrbitRadius": {
-      "type": "float", "default": 1.78, "min": 1.25, "max": 3.2, "step": 0.05,
+      "type": "float", "default": 1.62, "min": 1.20, "max": 3.2, "step": 0.05,
       "label": { "zh": "轨道半径", "en": "Orbit Radius" },
       "group": { "zh": "牵引轨道", "en": "Tether Orbit" }
     },
     "uOrbitRotationSpeed": {
-      "type": "float", "default": 0.55, "min": 0.0, "max": 3.0, "step": 0.05,
+      "type": "float", "default": 0.48, "min": 0.0, "max": 3.0, "step": 0.05,
       "label": { "zh": "轨道旋转速度", "en": "Orbit Rotation" },
-      "description": { "zh": "轨道现在会叠加多个低频非同步律动，不再像匀速刚体旋转。", "en": "The orbit now combines several slow asynchronous motions instead of rigid constant-speed rotation." },
+      "description": { "zh": "轨道使用多个不同低频分量缓慢漂移，不再表现为规则刚体旋转。", "en": "The orbit drifts through several slow incommensurate terms rather than a regular rigid rotation." },
       "group": { "zh": "牵引轨道", "en": "Tether Orbit" }
     },
     "uOrbitPulse": {
-      "type": "float", "default": 0.026, "min": 0.0, "max": 0.18, "step": 0.002,
+      "type": "float", "default": 0.020, "min": 0.0, "max": 0.18, "step": 0.002,
       "label": { "zh": "轨道不规则律动", "en": "Orbit Irregular Pulse" },
-      "description": { "zh": "控制轨道沿不同位置缓慢、不完全同步的呼吸形变。", "en": "Controls slow asynchronous breathing deformation along different parts of the orbit." },
+      "description": { "zh": "控制轨道不同位置互不同步的慢速呼吸形变。", "en": "Controls slow asynchronous breathing deformation at different points along the single closed orbit." },
       "group": { "zh": "牵引轨道", "en": "Tether Orbit" }
     },
     "uOrbitPullStrength": {
-      "type": "float", "default": 0.78, "min": 0.0, "max": 1.2, "step": 0.02,
+      "type": "float", "default": 0.80, "min": 0.0, "max": 1.2, "step": 0.02,
       "label": { "zh": "轨道牵引强度", "en": "Orbit Pull Strength" },
       "group": { "zh": "牵引轨道", "en": "Tether Orbit" }
     },
     "uOrbitInfluenceWidth": {
-      "type": "float", "default": 0.08, "min": 0.025, "max": 0.28, "step": 0.005,
+      "type": "float", "default": 0.07, "min": 0.025, "max": 0.28, "step": 0.005,
       "label": { "zh": "轨道牵引范围", "en": "Tether Width" },
       "group": { "zh": "牵引轨道", "en": "Tether Orbit" }
     },
     "uOrbitHighlightStrength": {
-      "type": "float", "default": 1.25, "min": 0.0, "max": 4.0, "step": 0.05,
+      "type": "float", "default": 1.35, "min": 0.0, "max": 4.0, "step": 0.05,
       "label": { "zh": "牵引段高亮", "en": "Tether Highlight" },
       "group": { "zh": "牵引轨道", "en": "Tether Orbit" }
     },
