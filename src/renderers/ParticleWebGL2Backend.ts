@@ -42,7 +42,7 @@ function validateShaderProgram(gl: WebGL2RenderingContext, vertexSource: string,
 
 const TAU = Math.PI * 2;
 const ORBIT_AXIS = new THREE.Vector3(0.18, 1.0, 0.07).normalize();
-const ORBIT_SEGMENTS = 640;
+const ORBIT_SEGMENTS = 768;
 const ORBIT_SIDES = 8;
 const ORBIT_SHELL_TARGET_RADIUS = 1.68;
 
@@ -67,12 +67,13 @@ function orbitEventT(eventId: number, lane: number) {
 }
 
 // Must match orbitCurveDir() in solar-orbital-prominence/shader.vert exactly.
-// The azimuth derivative is always positive, so the single closed line keeps winding forward
-// instead of producing the large local reversals of the previous normalized harmonic curve.
 function sampleOrbitDirection(t: number, rotationAngle: number, target: THREE.Vector3) {
   const phase = TAU * fract(t);
-  const azimuth = 3.0 * phase + 0.12 * Math.sin(6.0 * phase);
-  const latitude = 0.56 * Math.sin(5.0 * phase + 0.35) + 0.10 * Math.sin(10.0 * phase - 0.55);
+  const azimuth = 3.0 * phase
+    + 0.085 * Math.sin(6.0 * phase)
+    + 0.025 * Math.sin(12.0 * phase + 0.4);
+  const latitude = 0.50 * Math.sin(5.0 * phase + 0.35)
+    + 0.075 * Math.sin(10.0 * phase - 0.55);
   const cosLat = Math.cos(latitude);
   target.set(
     cosLat * Math.cos(azimuth),
@@ -81,6 +82,29 @@ function sampleOrbitDirection(t: number, rotationAngle: number, target: THREE.Ve
   );
   target.applyAxisAngle(ORBIT_AXIS, rotationAngle);
   return target.normalize();
+}
+
+function sampleSolarDispersion(t: number, target: THREE.Color) {
+  const x = THREE.MathUtils.clamp(t, 0, 1);
+  const stops = [
+    { t: 0.00, c: new THREE.Color(1.00, 0.985, 0.94) },
+    { t: 0.095, c: new THREE.Color(1.00, 0.16, 0.025) },
+    { t: 0.255, c: new THREE.Color(1.00, 0.78, 0.055) },
+    { t: 0.425, c: new THREE.Color(0.18, 1.00, 0.37) },
+    { t: 0.605, c: new THREE.Color(0.04, 0.92, 1.00) },
+    { t: 0.805, c: new THREE.Color(0.12, 0.30, 1.00) },
+    { t: 1.00, c: new THREE.Color(0.78, 0.18, 1.00) },
+  ];
+
+  for (let i = 0; i < stops.length - 1; i += 1) {
+    const a = stops[i];
+    const b = stops[i + 1];
+    if (x <= b.t) {
+      const u = (x - a.t) / Math.max(b.t - a.t, 1e-6);
+      return target.copy(a.c).lerp(b.c, THREE.MathUtils.clamp(u, 0, 1));
+    }
+  }
+  return target.copy(stops[stops.length - 1].c);
 }
 
 interface ActiveOrbitEvent {
@@ -210,7 +234,7 @@ export class ParticleWebGL2Backend implements RendererBackend {
       color: 0xffffff,
       vertexColors: true,
       transparent: true,
-      opacity: 0.88,
+      opacity: 0.62,
       blending: THREE.AdditiveBlending,
       depthTest: false,
       depthWrite: false,
@@ -283,14 +307,16 @@ export class ParticleWebGL2Backend implements RendererBackend {
     const positions = this.orbitPositionAttribute.array as Float32Array;
     const colors = this.orbitColorAttribute.array as Float32Array;
     const radius = Number(this.uniforms.uOrbitRadius?.value ?? 2.15);
-    const pulse = Number(this.uniforms.uOrbitPulse?.value ?? 0.035);
+    const pulse = Number(this.uniforms.uOrbitPulse?.value ?? 0.025);
     const rotationSpeed = Number(this.uniforms.uOrbitRotationSpeed?.value ?? 1.0);
-    const thickness = Number(this.uniforms.uOrbitThickness?.value ?? 0.006);
+    const thickness = Number(this.uniforms.uOrbitThickness?.value ?? 0.0035);
     const pullStrength = Number(this.uniforms.uOrbitPullStrength?.value ?? 0.9);
     const influenceWidth = Number(this.uniforms.uOrbitInfluenceWidth?.value ?? 0.11);
     const highlightStrength = Number(this.uniforms.uOrbitHighlightStrength?.value ?? 1.5);
     const orbitColor = this.uniforms.uOrbitLineColor?.value as THREE.Color | undefined;
-    const brightness = Number(this.uniforms.uOrbitLineBrightness?.value ?? 2.25);
+    const brightness = Number(this.uniforms.uOrbitLineBrightness?.value ?? 1.45);
+    const saturation = Number(this.uniforms.uProminenceSaturation?.value ?? 1.0);
+    const dispersionSpread = Number(this.uniforms.uProminenceHueSpan?.value ?? 1.0);
     const rotationAngle = elapsedSeconds * 0.18 * rotationSpeed;
     const events = this.collectActiveOrbitEvents(elapsedSeconds);
 
@@ -302,21 +328,19 @@ export class ParticleWebGL2Backend implements RendererBackend {
     const frameBinormal = new THREE.Vector3();
     const center = new THREE.Vector3();
     const vertex = new THREE.Vector3();
-    const tangentStep = 0.75 / ORBIT_SEGMENTS;
+    const spectral = new THREE.Color();
+    const neutral = new THREE.Color();
+    const finalColor = new THREE.Color();
+    const tangentStep = 0.72 / ORBIT_SEGMENTS;
 
-    const baseR = (orbitColor?.r ?? 1) * brightness;
-    const baseG = (orbitColor?.g ?? 1) * brightness;
-    const baseB = (orbitColor?.b ?? 1) * brightness;
+    const sourceColor = orbitColor ?? new THREE.Color(1, 1, 1);
 
     for (let segment = 0; segment < ORBIT_SEGMENTS; segment += 1) {
       const t = segment / ORBIT_SEGMENTS;
       const eventWeight = this.orbitEventWeight(t, events, influenceWidth);
-      const localPulse = 1 + pulse * Math.sin(elapsedSeconds * 0.72 + t * TAU * 2.0);
+      const localPulse = 1 + pulse * Math.sin(elapsedSeconds * 0.62 + t * TAU * 2.0);
       const normalRadius = radius * localPulse;
-
-      // Keep the tether indentation broad and C1-like rather than dragging a short segment almost
-      // all the way to the shell. This preserves the visual connection without creating a V-fold.
-      const pullAmount = THREE.MathUtils.clamp(eventWeight * pullStrength * 0.74, 0, 0.74);
+      const pullAmount = THREE.MathUtils.clamp(eventWeight * pullStrength * 0.70, 0, 0.70);
       const localRadius = THREE.MathUtils.lerp(normalRadius, ORBIT_SHELL_TARGET_RADIUS, pullAmount);
 
       sampleOrbitDirection(t, rotationAngle, dir);
@@ -324,20 +348,29 @@ export class ParticleWebGL2Backend implements RendererBackend {
       sampleOrbitDirection(t + tangentStep, rotationAngle, next);
       tangent.subVectors(next, previous);
       tangent.addScaledVector(dir, -tangent.dot(dir));
-      if (tangent.lengthSq() < 1e-10) {
-        tangent.set(-dir.z, 0, dir.x);
-      }
+      if (tangent.lengthSq() < 1e-10) tangent.set(-dir.z, 0, dir.x);
       tangent.normalize();
+
       frameBinormal.crossVectors(tangent, dir);
-      if (frameBinormal.lengthSq() < 1e-10) {
-        frameBinormal.set(0, 1, 0).cross(dir);
-      }
+      if (frameBinormal.lengthSq() < 1e-10) frameBinormal.set(0, 1, 0).cross(dir);
       frameBinormal.normalize();
       frameNormal.crossVectors(frameBinormal, tangent).normalize();
       center.copy(dir).multiplyScalar(localRadius);
 
-      const highlight = Math.min(1 + highlightStrength * eventWeight, 4.0);
-      const localThickness = thickness * (1 + 0.10 * eventWeight);
+      const baseVariation = 0.72 + 0.10 * Math.sin(t * TAU * 7.0 - elapsedSeconds * 0.21);
+      const highlight = Math.min(1 + highlightStrength * eventWeight * 0.72, 3.0);
+      const localThickness = thickness * (1 + 0.06 * eventWeight);
+
+      neutral.copy(sourceColor).multiplyScalar(brightness * baseVariation * highlight);
+      const spectralT = fract(t * 2.65 + elapsedSeconds * 0.018);
+      sampleSolarDispersion(spectralT, spectral);
+      spectral.multiplyScalar(brightness * (0.95 + 0.55 * eventWeight));
+      const chroma = THREE.MathUtils.clamp(
+        eventWeight * 0.72 * saturation * THREE.MathUtils.clamp(dispersionSpread, 0, 1.5),
+        0,
+        0.82,
+      );
+      finalColor.copy(neutral).lerp(spectral, chroma);
 
       for (let side = 0; side < ORBIT_SIDES; side += 1) {
         const angle = (side / ORBIT_SIDES) * TAU;
@@ -350,9 +383,9 @@ export class ParticleWebGL2Backend implements RendererBackend {
         positions[offset] = vertex.x;
         positions[offset + 1] = vertex.y;
         positions[offset + 2] = vertex.z;
-        colors[offset] = baseR * highlight;
-        colors[offset + 1] = baseG * highlight;
-        colors[offset + 2] = baseB * highlight;
+        colors[offset] = finalColor.r;
+        colors[offset + 1] = finalColor.g;
+        colors[offset + 2] = finalColor.b;
       }
     }
 
@@ -400,7 +433,7 @@ export class ParticleWebGL2Backend implements RendererBackend {
 
     if (this.orbitMaterial) {
       this.orbitMaterial.opacity = Number(
-        values.uOrbitLineOpacity ?? this.uniforms.uOrbitLineOpacity?.value ?? 0.88,
+        values.uOrbitLineOpacity ?? this.uniforms.uOrbitLineOpacity?.value ?? 0.62,
       );
     }
   }
@@ -433,7 +466,7 @@ export class ParticleWebGL2Backend implements RendererBackend {
       height: this.height,
       drawCalls: this.renderer?.info.render.calls ?? 0,
       renderer: this.orbitMesh
-        ? 'Three.js / Instanced Particles + Smooth Continuous Tether Orbit'
+        ? 'Three.js / Instanced Particles + Reference Tether Orbit'
         : 'Three.js / Instanced WebGL2 Particles',
     };
   }
