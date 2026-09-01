@@ -267,7 +267,7 @@ void main() {
 
       float life = max(uFlightDuration, 0.25);
       float p = clamp(eventAge / life, 0.0, 1.0);
-      float active = enabled * step(0.0, eventAge) * step(eventAge, life);
+      float eventActive = enabled * step(0.0, eventAge) * step(eventAge, life);
       float cutEnvelope = enabled
         * smoothstep(-0.18, 0.04, eventAge)
         * (1.0 - smoothstep(life * 0.78, life * 1.10, eventAge));
@@ -295,7 +295,7 @@ void main() {
       float curl = sin(p * TAU * (0.82 + 0.75 * sc) + sa * TAU + eventIndex)
         * uRibbonWidth * (0.7 + 2.4 * p) * uShapeRandomness;
       float rejoin = smoothstep(0.82, 1.0, p);
-      float travelMask = detached * active * (1.0 - rejoin);
+      float travelMask = detached * eventActive * (1.0 - rejoin);
 
       vec3 plumeOffset = dir * lift
         + tangentA * forward
