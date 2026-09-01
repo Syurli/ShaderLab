@@ -10,6 +10,8 @@ import solarProminenceVertex from '../experiments/particles/solar-prominence/sha
 import solarProminenceFragment from '../experiments/particles/solar-prominence/shader.frag?raw';
 import solarOrbitalProminenceVertex from '../experiments/particles/solar-orbital-prominence/shader.vert?raw';
 import solarOrbitalProminenceFragment from '../experiments/particles/solar-orbital-prominence/shader.frag?raw';
+import orbitalCutterPlasmaVertex from '../experiments/particles/orbital-cutter-plasma/shader.vert?raw';
+import orbitalCutterPlasmaFragment from '../experiments/particles/orbital-cutter-plasma/shader.frag?raw';
 
 const interactiveFluidGasRuntimeWGSL = interactiveFluidGasWGSL.replace(/\bactive\b/g, 'burstActivity');
 type ExperimentInput = Omit<ExperimentDefinition, 'metadata'>;
@@ -49,6 +51,11 @@ export const experiments: ExperimentDefinition[] = [
     id: 'solar-orbital-prominence', title: { zh: '轨道线日珥粒子球', en: 'Orbital-Line Solar Prominence' },
     description: { zh: '用一根首尾相连的高亮白色闭合曲线缠绕粒子球。活跃轨道段会向球面弯下并同步增亮，其径向投影直接成为日珥根部；被掀起的粒子沿轨道切线牵引，并使用暖白到红、金、青、蓝、紫的阳光色散映射。轨道粗细、牵引强度与高亮均可参数化。', en: 'A single luminous closed curve weaves around the particle shell. Active orbit segments bend toward the surface and brighten in sync; their radial projection becomes the prominence root, while lifted particles follow the orbit tangent and map through a sunlight-dispersion palette from warm white/red through gold, cyan, blue and violet. Orbit thickness, pull and highlight are parameterized.' },
     category: { zh: '粒子', en: 'Particles' }, tags: ['WebGL2','GLSL','Particles','Prominence','Continuous Orbit','Tether','HLSL-portable'], backend: 'particle-webgl2', languages: ['GLSL'], sourceFile: 'shader.frag', maxPixelRatio: 1.25, vertexShader: solarOrbitalProminenceVertex, fragmentShader: solarOrbitalProminenceFragment,
+  }),
+  defineExperiment({
+    id: 'orbital-cutter-plasma', title: { zh: '轨道切割等离子粒子球', en: 'Orbital Cutter Plasma Shell' },
+    description: { zh: '下一阶段的轨道动力学实验：停止球心驱动的日珥力，改由活跃轨道线段向球面贴合并执行切割。切口中的原始球面粒子被直接剥离，沿轨道切线形成火焰/等离子日珥尾迹；切割线段向两侧传播表面波纹，并在空中额外生成大尺寸、强色散的光斑粒子。', en: 'A next-stage orbital dynamics experiment with no center-driven prominence force. Active orbit segments bend into the shell and cut it directly: original shell grains are stripped into flame/plasma wakes along the orbit tangent, cut ripples propagate laterally from the segment, and large strongly dispersed flare sprites are spawned directly in the airborne wake.' },
+    category: { zh: '粒子', en: 'Particles' }, tags: ['WebGL2','GLSL','Particles','Orbital Cutter','Plasma','Chromatic Flares','HLSL-portable'], backend: 'particle-webgl2', languages: ['GLSL'], sourceFile: 'shader.frag', maxPixelRatio: 1.2, vertexShader: orbitalCutterPlasmaVertex, fragmentShader: orbitalCutterPlasmaFragment,
   }),
   defineExperiment({
     id: 'chimney-smoke', title: { zh: '烟囱烟雾体积渲染', en: 'Chimney Smoke Volume' },
